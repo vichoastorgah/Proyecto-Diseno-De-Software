@@ -1,0 +1,22 @@
+[
+  {
+    "email": "gerente@empresa.com",
+    "name": "Ana Silva",
+    "birthdate": "1985-05-14",
+    "gender": "f",
+    "weight": 1,
+    "token": "728e7e8a-61d6-4494-848a-db8bf350d0a6",
+    "tokenExpiresAt": "2026-10-13T22:45:34.826Z",
+    "hasVoted": true
+  },
+  {
+    "email": "analista@empresa.com",
+    "name": "Diego Gomez",
+    "birthdate": "1992-08-22",
+    "gender": "m",
+    "weight": 1,
+    "token": "d852f754-abe0-41f3-acbc-fea98a9cec0c",
+    "tokenExpiresAt": "2026-10-13T22:45:34.826Z",
+    "hasVoted": false
+  }
+]
