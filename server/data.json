@@ -1,0 +1,81 @@
+{
+  "id": "survey-2026-001",
+  "title": "Annual Organizational Survey 2026",
+  "initialRecipient": "ceo@company.com",
+  "createdAt": "2026-10-05T12:00:00.000Z",
+  "progress": {
+    "totalQuestions": 4,
+    "answeredQuestions": 1,
+    "pendingQuestions": 3,
+    "completionPercentage": 25,
+    "byCategory": {
+      "finance": { "total": 2, "answered": 1 },
+      "operations": { "total": 1, "answered": 0 },
+      "marketing": { "total": 1, "answered": 0 }
+    }
+  },
+  "questions": [
+    {
+      "id": "q-001",
+      "category": "finance",
+      "text": "What was the net operating margin for the last fiscal year?",
+      "originalAssignee": "ceo@company.com",
+      "currentOwner": "cfo@company.com",
+      "status": "answered",
+      "answer": "18.4%",
+      "answeredAt": "2026-10-04T15:30:00.000Z",
+      "delegationHistory": [
+        {
+          "from": "ceo@company.com",
+          "to": "cfo@company.com",
+          "delegatedAt": "2026-10-03T09:15:00.000Z"
+        }
+      ]
+    },
+    {
+      "id": "q-002",
+      "category": "finance",
+      "text": "What is the projected budget for the next fiscal year?",
+      "originalAssignee": "ceo@company.com",
+      "currentOwner": "ceo@company.com",
+      "status": "pending",
+      "answer": null,
+      "answeredAt": null,
+      "delegationHistory": []
+    },
+    {
+      "id": "q-003",
+      "category": "operations",
+      "text": "How many production incidents occurred during the last quarter?",
+      "originalAssignee": "ceo@company.com",
+      "currentOwner": "coo@company.com",
+      "status": "pending",
+      "answer": null,
+      "answeredAt": null,
+      "delegationHistory": [
+        {
+          "from": "ceo@company.com",
+          "to": "coo@company.com",
+          "delegatedAt": "2026-10-03T09:20:00.000Z"
+        }
+      ]
+    },
+    {
+      "id": "q-004",
+      "category": "marketing",
+      "text": "Which acquisition channel delivered the highest ROI this year?",
+      "originalAssignee": "ceo@company.com",
+      "currentOwner": "cmo@company.com",
+      "status": "pending",
+      "answer": null,
+      "answeredAt": null,
+      "delegationHistory": [
+        {
+          "from": "ceo@company.com",
+          "to": "cmo@company.com",
+          "delegatedAt": "2026-10-03T09:25:00.000Z"
+        }
+      ]
+    }
+  ]
+}
