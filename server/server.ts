@@ -177,6 +177,22 @@ router.post("/api/vote", async (ctx) => {
   }
 });
 
+/**
+ * GET /api/survey
+ * Fetches the massive survey data (Survey Dashboard).
+ */
+router.get("/api/survey", async (ctx) => {
+  try {
+    const surveyFile = new URL("./data.json", import.meta.url);
+    const data = await Deno.readTextFile(surveyFile);
+    ctx.response.status = 200;
+    ctx.response.body = JSON.parse(data);
+  } catch (error) {
+    console.error("Error reading survey data:", error);
+    sendError(ctx, 500, "Failed to load survey data.");
+  }
+});
+
 // ---------- App ----------
 
 const app = new Application();
