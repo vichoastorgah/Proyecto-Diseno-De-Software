@@ -1,0 +1,116 @@
+{
+  "common": {
+    "loading": "Cargando...",
+    "sending": "Enviando...",
+    "submit": "Enviar",
+    "cancel": "Cancelar",
+    "save": "Guardar",
+    "back": "Volver",
+    "language": "Idioma"
+  },
+  "errors": {
+    "requestFailed": "La solicitud falló con el estado {status}.",
+    "network": "No se pudo conectar con el servidor. Verifique que el backend esté en ejecución."
+  },
+  "nav": {
+    "brand": "Sistema de Votación y Encuestas",
+    "admin": "Administración",
+    "survey": "Encuesta",
+    "vote": "Votar",
+    "toggleMenu": "Alternar navegación",
+    "toggleLanguage": "Cambiar idioma"
+  },
+  "voting": {
+    "ballotTitle": "Papeleta Oficial",
+    "motionTitle": "Aprobar el presupuesto anual 2026",
+    "approve": "Aprobar",
+    "reject": "Rechazar",
+    "sending": "Enviando...",
+    "success": "Voto registrado con éxito.",
+    "errors": {
+      "invalidToken": "Token de votación inválido.",
+      "alreadyVoted": "El votante ya ha emitido su voto.",
+      "unexpected": "Error inesperado. Por favor, inténtelo de nuevo.",
+      "network": "No se pudo conectar con el servidor. Por favor, inténtelo de nuevo."
+    }
+  },
+  "admin": {
+    "title": "Portal de Administración",
+    "description": "Suba un archivo CSV para registrar la lista de votantes.",
+    "csvLabel": "Archivo CSV de votantes",
+    "selected": "Seleccionado: {fileName}",
+    "upload": "Subir CSV",
+    "uploading": "Subiendo...",
+    "success": "Votantes cargados con éxito.",
+    "errors": {
+      "noFile": "Por favor, seleccione primero un archivo CSV.",
+      "invalidExtension": "Solo se permiten archivos .csv.",
+      "unexpected": "Ocurrió un error inesperado."
+    }
+  },
+  "survey": {
+    "dashboardTitle": "Panel de Encuesta",
+    "loading": "Cargando...",
+    "noQuestions": "Aún no hay preguntas disponibles.",
+    "dismissMessage": "Descartar mensaje",
+    "saved": "Guardado.",
+    "errors": {
+      "loadFailed": "No se pudieron cargar los datos de la encuesta.",
+      "refreshFailed": "No se pudo actualizar la encuesta."
+    },
+    "activeUser": {
+      "label": "Correo del usuario activo",
+      "placeholder": "Seleccione o escriba un correo",
+      "invalid": "Ingrese una dirección de correo válida.",
+      "refresh": "Actualizar datos",
+      "refreshing": "Actualizando...",
+      "demoNote": "Modo demostración: cambie el usuario activo para actuar como un colega delegado."
+    },
+    "progress": {
+      "title": "Progreso Global",
+      "ariaLabel": "Avance global de la encuesta",
+      "summary": "{answered} de {total} preguntas respondidas, {pending} pendientes."
+    },
+    "question": {
+      "ownerTitle": "Persona responsable actual",
+      "owner": "Responsable: {owner}",
+      "delegated": "Delegada",
+      "answered": "Respondida",
+      "pending": "Pendiente",
+      "originallyAssigned": "Asignada originalmente a {assignee}.",
+      "answerLabel": "Respuesta",
+      "answerPlaceholder": "Escriba su respuesta",
+      "saveAnswer": "Guardar respuesta",
+      "delegateLabel": "Delegar esta pregunta a",
+      "delegatePlaceholder": "colega@empresa.com",
+      "delegate": "Delegar",
+      "lockedWithDate": "Respondida por {owner} el {date}. Esta pregunta está bloqueada.",
+      "locked": "Respondida por {owner}. Esta pregunta está bloqueada.",
+      "onlyOwner": "Solo {owner} puede responder o delegar esta pregunta."
+    },
+    "category": {
+      "answeredBadge": "{answered}/{total} respondidas",
+      "completionLabel": "Avance de {category}",
+      "delegateLabel": "Delegar toda la categoría",
+      "delegatePlaceholder": "colega@empresa.com",
+      "delegateCount": "Delegar {count} pendientes",
+      "delegateCategory": "Delegar categoría",
+      "delegateHelp": "Transfiere todas las preguntas pendientes que usted posee en esta categoría. Las preguntas respondidas permanecen bloqueadas.",
+      "allAnswered": "Todas las preguntas de esta categoría están respondidas. No queda nada por delegar.",
+      "notOwner": "Usted no posee ninguna pregunta pendiente en esta categoría. La responsabilidad recae en: {owners}."
+    },
+    "categories": {
+      "uncategorized": "Sin categoría",
+      "general": "General",
+      "finance": "Finanzas",
+      "hr": "Recursos Humanos",
+      "it": "TI",
+      "legal": "Legal",
+      "operations": "Operaciones",
+      "marketing": "Marketing",
+      "compliance": "Cumplimiento",
+      "security": "Seguridad",
+      "sales": "Ventas"
+    }
+  }
+}

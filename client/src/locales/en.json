@@ -1,0 +1,116 @@
+{
+  "common": {
+    "loading": "Loading...",
+    "sending": "Sending...",
+    "submit": "Submit",
+    "cancel": "Cancel",
+    "save": "Save",
+    "back": "Back",
+    "language": "Language"
+  },
+  "errors": {
+    "requestFailed": "Request failed with status {status}.",
+    "network": "Could not reach the server. Check that the backend is running."
+  },
+  "nav": {
+    "brand": "Voting & Survey System",
+    "admin": "Admin",
+    "survey": "Survey",
+    "vote": "Vote",
+    "toggleMenu": "Toggle navigation",
+    "toggleLanguage": "Switch language"
+  },
+  "voting": {
+    "ballotTitle": "Official Ballot",
+    "motionTitle": "Approve the 2026 annual budget",
+    "approve": "Approve",
+    "reject": "Reject",
+    "sending": "Sending...",
+    "success": "Vote successfully registered.",
+    "errors": {
+      "invalidToken": "Invalid voting token.",
+      "alreadyVoted": "Voter has already cast a vote.",
+      "unexpected": "Unexpected error. Please try again.",
+      "network": "Unable to reach the server. Please try again."
+    }
+  },
+  "admin": {
+    "title": "Admin Portal",
+    "description": "Upload a CSV file to register the list of voters.",
+    "csvLabel": "Voters CSV file",
+    "selected": "Selected: {fileName}",
+    "upload": "Upload CSV",
+    "uploading": "Uploading...",
+    "success": "Voters uploaded successfully.",
+    "errors": {
+      "noFile": "Please select a CSV file first.",
+      "invalidExtension": "Only .csv files are allowed.",
+      "unexpected": "An unexpected error occurred."
+    }
+  },
+  "survey": {
+    "dashboardTitle": "Survey Dashboard",
+    "loading": "Loading...",
+    "noQuestions": "No questions available yet.",
+    "dismissMessage": "Dismiss message",
+    "saved": "Saved.",
+    "errors": {
+      "loadFailed": "Could not load the survey data.",
+      "refreshFailed": "Could not refresh the survey."
+    },
+    "activeUser": {
+      "label": "Active user email",
+      "placeholder": "Select or type an email",
+      "invalid": "Enter a valid email address.",
+      "refresh": "Refresh data",
+      "refreshing": "Refreshing...",
+      "demoNote": "Demo mode: switch the active user to act as a delegated colleague."
+    },
+    "progress": {
+      "title": "Global Progress",
+      "ariaLabel": "Global survey completion",
+      "summary": "{answered} of {total} questions answered, {pending} pending."
+    },
+    "question": {
+      "ownerTitle": "Current responsible person",
+      "owner": "Owner: {owner}",
+      "delegated": "Delegated",
+      "answered": "Answered",
+      "pending": "Pending",
+      "originallyAssigned": "Originally assigned to {assignee}.",
+      "answerLabel": "Answer",
+      "answerPlaceholder": "Type your answer",
+      "saveAnswer": "Save answer",
+      "delegateLabel": "Delegate this question to",
+      "delegatePlaceholder": "colleague@company.com",
+      "delegate": "Delegate",
+      "lockedWithDate": "Answered by {owner} on {date}. This question is locked.",
+      "locked": "Answered by {owner}. This question is locked.",
+      "onlyOwner": "Only {owner} can answer or delegate this question."
+    },
+    "category": {
+      "answeredBadge": "{answered}/{total} answered",
+      "completionLabel": "{category} completion",
+      "delegateLabel": "Delegate entire category",
+      "delegatePlaceholder": "colleague@company.com",
+      "delegateCount": "Delegate {count} pending",
+      "delegateCategory": "Delegate category",
+      "delegateHelp": "Transfers every pending question you own in this category. Answered questions stay locked.",
+      "allAnswered": "All questions in this category are answered. Nothing left to delegate.",
+      "notOwner": "You do not own any pending question in this category. Responsibility is held by: {owners}."
+    },
+    "categories": {
+      "uncategorized": "Uncategorized",
+      "general": "General",
+      "finance": "Finance",
+      "hr": "Human Resources",
+      "it": "IT",
+      "legal": "Legal",
+      "operations": "Operations",
+      "marketing": "Marketing",
+      "compliance": "Compliance",
+      "security": "Security",
+      "sales": "Sales"
+    }
+  }
+}

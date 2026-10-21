@@ -1,21 +1,24 @@
-import { useState } from "react";
+import { useContext, useState } from "react";
 import { useSearchParams } from "react-router-dom";
+import { LanguageContext } from "../context/LanguageContext";
 
 const API_URL = "http://localhost:8000/api/vote";
 const MOTION_ID = "motion-001";
-const MOTION_TITLE = "Approve the 2026 annual budget";
 
 function VotingView() {
+  const { t } = useContext(LanguageContext);
   const [searchParams] = useSearchParams();
   const token = searchParams.get("token");
 
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
+  // Stores a translation KEY (not the final text) so the message
+  // re-renders correctly if the user switches language afterwards
   const [error, setError] = useState(null);
   // Set to true when the token is invalid (404) or already used (403)
   const [blocked, setBlocked] = useState(!token);
 
-  const initialError = !token ? "Invalid voting token." : null;
+  const initialError = !token ? "voting.errors.invalidToken" : null;
   const displayedError = error || initialError;
 
   const handleVote = async (choice) => {
@@ -34,16 +37,16 @@ function VotingView() {
       if (response.status === 200) {
         setSuccess(true);
       } else if (response.status === 403) {
-        setError("Voter has already cast a vote.");
+        setError("voting.errors.alreadyVoted");
         setBlocked(true);
       } else if (response.status === 404) {
-        setError("Invalid voting token.");
+        setError("voting.errors.invalidToken");
         setBlocked(true);
       } else {
-        setError("Unexpected error. Please try again.");
+        setError("voting.errors.unexpected");
       }
     } catch (err) {
-      setError("Unable to reach the server. Please try again.");
+      setError("voting.errors.network");
     } finally {
       setLoading(false);
     }
@@ -57,21 +60,21 @@ function VotingView() {
         <div className="col-12 col-md-8 col-lg-6">
           <div className="card shadow-sm">
             <div className="card-header text-center">
-              <h2 className="h5 mb-0">Official Ballot</h2>
+              <h2 className="h5 mb-0">{t("voting.ballotTitle")}</h2>
             </div>
 
             <div className="card-body p-4 text-center">
-              <h1 className="h4 mb-4">{MOTION_TITLE}</h1>
+              <h1 className="h4 mb-4">{t("voting.motionTitle")}</h1>
 
               {success && (
                 <div className="alert alert-success" role="alert">
-                  Vote successfully registered.
+                  {t("voting.success")}
                 </div>
               )}
 
               {displayedError && (
                 <div className="alert alert-danger" role="alert">
-                  {displayedError}
+                  {t(displayedError)}
                 </div>
               )}
 
@@ -90,10 +93,10 @@ function VotingView() {
                           role="status"
                           aria-hidden="true"
                         ></span>
-                        Sending...
+                        {t("voting.sending")}
                       </>
                     ) : (
-                      "Approve"
+                      t("voting.approve")
                     )}
                   </button>
 
@@ -110,10 +113,10 @@ function VotingView() {
                           role="status"
                           aria-hidden="true"
                         ></span>
-                        Sending...
+                        {t("voting.sending")}
                       </>
                     ) : (
-                      "Reject"
+                      t("voting.reject")
                     )}
                   </button>
                 </div>

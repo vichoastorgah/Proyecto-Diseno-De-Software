@@ -1,6 +1,7 @@
 /**
  * @module server
- * Oak HTTP layer. Business logic lives in `services/voterService.ts` and `services/votingService.ts`.
+ * Oak HTTP layer. Business logic lives in `services/voterService.ts`,
+ * `services/votingService.ts` and `services/surveyService.ts`.
  *
  * Run: deno run --allow-net --allow-read --allow-write --allow-env server/server.ts
  */
@@ -11,7 +12,12 @@ import {
   sendPersonalizedEmail,
   type VoterRecord,
 } from "./services/voterService.ts";
-import { processVote } from "./services/votingService.ts"; // <-- Nueva importación del motor de votos
+import { processVote } from "./services/votingService.ts"; // Voting engine
+import {
+  answerQuestion,
+  delegateResponsibility,
+  SurveyServiceError,
+} from "./services/surveyService.ts"; // Massive survey engine
 
 const PORT = Number(Deno.env.get("PORT") ?? 8000);
 const ALLOWED_ORIGIN = Deno.env.get("ALLOWED_ORIGIN") ?? "http://localhost:5173";
@@ -35,6 +41,29 @@ function sendError(ctx: Context, status: number, error: string, details?: string
   const body: ErrorResponse = details ? { error, details } : { error };
   ctx.response.status = status;
   ctx.response.body = body;
+}
+
+/**
+ * Maps a survey service failure to an HTTP error response.
+ * Known business errors keep their status; anything else becomes a generic 500.
+ */
+function sendSurveyError(ctx: Context, error: unknown, fallbackMessage: string): void {
+  if (error instanceof SurveyServiceError) {
+    return sendError(ctx, error.status, error.message);
+  }
+  console.error(fallbackMessage, error);
+  sendError(ctx, 500, fallbackMessage);
+}
+
+/** Reads a JSON object from the request body; returns null if it is missing or malformed. */
+async function readJsonObject(ctx: Context): Promise<Record<string, unknown> | null> {
+  try {
+    const body: unknown = await ctx.request.body.json();
+    if (typeof body !== "object" || body === null || Array.isArray(body)) return null;
+    return body as Record<string, unknown>;
+  } catch {
+    return null;
+  }
 }
 
 // ---------- Persistence (serialized to avoid concurrent write races) ----------
@@ -150,28 +179,27 @@ router.post("/api/vote", async (ctx) => {
     const body = await ctx.request.body.json();
     const { token, motionId, choice } = body;
 
-    // Validación defensiva básica
+    // Basic defensive validation
     if (!token || !motionId || !choice) {
       return sendError(ctx, 400, "Missing required fields: token, motionId, and choice.");
     }
 
-    // Procesamos el voto delegando la lógica al servicio
+    // Delegate the vote processing to the service layer
     await processVote(token, motionId, choice);
 
     ctx.response.status = 200;
     ctx.response.body = { message: "Vote successfully registered." };
-    
   } catch (error: any) {
     const msg = error.message || "";
-    
+
     if (msg.includes("Invalid Token") || msg.includes("not found")) {
       return sendError(ctx, 404, "Invalid voting token.");
     }
-    
+
     if (msg.includes("Already Voted") || msg.includes("has already voted")) {
       return sendError(ctx, 403, "Voter has already cast a vote.");
     }
-    
+
     console.error("Error processing vote:", error);
     return sendError(ctx, 500, "Internal server error while processing the vote.");
   }
@@ -193,6 +221,71 @@ router.get("/api/survey", async (ctx) => {
   }
 });
 
+/**
+ * POST /api/survey/answer
+ * Body (JSON): { "questionId": "q-002", "userEmail": "ceo@company.com", "answerText": "..." }
+ * 200 -> { message, survey }; 400 -> invalid input; 403 -> caller is not the question owner;
+ * 404 -> unknown question; 409 -> already answered.
+ * TODO: derive `userEmail` from the authenticated SSO session instead of the request body.
+ */
+router.post("/api/survey/answer", async (ctx) => {
+  const body = await readJsonObject(ctx);
+  if (!body) return sendError(ctx, 400, "Request body must be a valid JSON object.");
+
+  const { questionId, userEmail, answerText } = body;
+  if (
+    typeof questionId !== "string" || typeof userEmail !== "string" ||
+    typeof answerText !== "string"
+  ) {
+    return sendError(ctx, 400, "Missing required fields: questionId, userEmail, and answerText.");
+  }
+
+  try {
+    const survey = await answerQuestion(questionId, userEmail, answerText);
+    ctx.response.status = 200;
+    ctx.response.body = { message: "Answer saved.", survey };
+  } catch (error) {
+    sendSurveyError(ctx, error, "Failed to save the answer.");
+  }
+});
+
+/**
+ * POST /api/survey/delegate
+ * Body (JSON): { "questionId"?: "q-002", "category"?: "finance",
+ *                "currentOwnerEmail": "...", "newOwnerEmail": "..." }
+ * Provide exactly one of `questionId` (single question) or `category` (all pending questions
+ * owned by the caller in that category).
+ * 200 -> { message, transferredQuestionIds, survey }; 400 -> invalid input; 403 -> caller is not
+ * the owner; 404 -> unknown question/category; 409 -> nothing pending to delegate.
+ * TODO: derive `currentOwnerEmail` from the authenticated SSO session.
+ */
+router.post("/api/survey/delegate", async (ctx) => {
+  const body = await readJsonObject(ctx);
+  if (!body) return sendError(ctx, 400, "Request body must be a valid JSON object.");
+
+  const { questionId, category, currentOwnerEmail, newOwnerEmail } = body;
+  if (typeof currentOwnerEmail !== "string" || typeof newOwnerEmail !== "string") {
+    return sendError(ctx, 400, "Missing required fields: currentOwnerEmail and newOwnerEmail.");
+  }
+
+  try {
+    const result = await delegateResponsibility({
+      questionId: typeof questionId === "string" ? questionId : undefined,
+      category: typeof category === "string" ? category : undefined,
+      currentOwnerEmail,
+      newOwnerEmail,
+    });
+    ctx.response.status = 200;
+    ctx.response.body = {
+      message: `Responsibility transferred for ${result.transferredQuestionIds.length} question(s).`,
+      transferredQuestionIds: result.transferredQuestionIds,
+      survey: result.survey,
+    };
+  } catch (error) {
+    sendSurveyError(ctx, error, "Failed to delegate responsibility.");
+  }
+});
+
 // ---------- App ----------
 
 const app = new Application();
@@ -200,7 +293,7 @@ const app = new Application();
 // Minimal CORS for the frontend dev server.
 app.use(async (ctx, next) => {
   ctx.response.headers.set("Access-Control-Allow-Origin", ALLOWED_ORIGIN);
-  ctx.response.headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  ctx.response.headers.set("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS");
   ctx.response.headers.set("Access-Control-Allow-Headers", "Content-Type, Authorization");
   if (ctx.request.method === "OPTIONS") {
     ctx.response.status = 204;
