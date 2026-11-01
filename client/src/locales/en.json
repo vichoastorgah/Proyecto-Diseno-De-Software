@@ -14,11 +14,21 @@
   },
   "nav": {
     "brand": "Voting & Survey System",
+    "home": "Home",
     "admin": "Admin",
     "survey": "Survey",
     "vote": "Vote",
+    "welcome": "Welcome",
+    "logout": "Logout",
     "toggleMenu": "Toggle navigation",
     "toggleLanguage": "Switch language"
+  },
+  "login": {
+    "title": "Admin Portal",
+    "subtitle": "Sign in to manage votes and surveys",
+    "googleButton": "Sign in with Google (SSO)",
+    "signingIn": "Redirecting to Google...",
+    "mockNotice": "Demo mode: simulated Google Identity SSO"
   },
   "voting": {
     "ballotTitle": "Official Ballot",

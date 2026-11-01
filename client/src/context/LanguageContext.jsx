@@ -1,35 +1,26 @@
-import { createContext, useCallback, useEffect, useMemo, useState } from "react";
+import { createContext, useCallback, useEffect, useMemo, useState, useContext } from "react";
 import en from "../locales/en.json";
 import es from "../locales/es.json";
 
-// Local dictionaries only (no external translation APIs)
 const dictionaries = { en, es };
 const DEFAULT_LANGUAGE = "en";
 
-export const LanguageContext = createContext({
-  language: DEFAULT_LANGUAGE,
-  t: (key) => key,
-  toggleLanguage: () => {},
-});
+export const LanguageContext = createContext(null);
 
 export function LanguageProvider({ children }) {
   const [language, setLanguage] = useState(DEFAULT_LANGUAGE);
 
-  // Select the dictionary matching the current language
   const dictionary = useMemo(
     () => dictionaries[language] || dictionaries[DEFAULT_LANGUAGE],
     [language]
   );
 
-  // Keep the <html lang> attribute in sync for accessibility
   useEffect(() => {
     document.documentElement.lang = language;
   }, [language]);
 
-  // Resolve a (possibly nested) key such as "voting.errors.invalidToken".
-  // Optional params replace {placeholder} tokens, e.g. t("key", { count: 3 }).
   const t = useCallback(
-    (key, params) => {
+    (key) => {
       if (typeof key !== "string") return "";
 
       const value = key
@@ -40,16 +31,7 @@ export function LanguageProvider({ children }) {
           dictionary
         );
 
-      // Fallback to the key itself when the translation is missing
-      if (typeof value !== "string") return key;
-
-      if (!params || typeof params !== "object") return value;
-
-      return value.replace(/\{(\w+)\}/g, (match, name) =>
-        Object.prototype.hasOwnProperty.call(params, name)
-          ? String(params[name])
-          : match
-      );
+      return typeof value === "string" ? value : key;
     },
     [dictionary]
   );
@@ -59,7 +41,7 @@ export function LanguageProvider({ children }) {
   }, []);
 
   const contextValue = useMemo(
-    () => ({ language, t, toggleLanguage }),
+    () => ({ language, setLanguage, t, toggleLanguage }),
     [language, t, toggleLanguage]
   );
 
@@ -68,4 +50,13 @@ export function LanguageProvider({ children }) {
       {children}
     </LanguageContext.Provider>
   );
+}
+
+// El nuevo Custom Hook que Claude estaba buscando
+export function useLanguage() {
+  const context = useContext(LanguageContext);
+  if (!context) {
+    throw new Error("useLanguage must be used within a LanguageProvider");
+  }
+  return context;
 }

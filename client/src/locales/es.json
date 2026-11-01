@@ -14,11 +14,21 @@
   },
   "nav": {
     "brand": "Sistema de Votación y Encuestas",
+    "home": "Inicio",
     "admin": "Administración",
     "survey": "Encuesta",
     "vote": "Votar",
+    "welcome": "Bienvenido",
+    "logout": "Cerrar sesión",
     "toggleMenu": "Alternar navegación",
     "toggleLanguage": "Cambiar idioma"
+  },
+  "login": {
+    "title": "Portal de Administración",
+    "subtitle": "Inicia sesión para gestionar votaciones y encuestas",
+    "googleButton": "Iniciar sesión con Google (SSO)",
+    "signingIn": "Redirigiendo a Google...",
+    "mockNotice": "Modo demo: SSO simulado de Google Identity"
   },
   "voting": {
     "ballotTitle": "Papeleta Oficial",
