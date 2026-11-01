@@ -1,7 +1,8 @@
 /**
  * @module server
  * Oak HTTP layer. Business logic lives in `services/voterService.ts`,
- * `services/votingService.ts` and `services/surveyService.ts`.
+ * `services/votingService.ts`, `services/surveyService.ts` and
+ * `services/adminService.ts`.
  *
  * Run: deno run --allow-net --allow-read --allow-write --allow-env server/server.ts
  */
@@ -18,10 +19,17 @@ import {
   delegateResponsibility,
   SurveyServiceError,
 } from "./services/surveyService.ts"; // Massive survey engine
+import {
+  AdminServiceError,
+  assertTokenMatchesMotion,
+  processAdminDispatch,
+  withWriteLock,
+} from "./services/adminService.ts"; // Motion creation + email dispatch
 
 const PORT = Number(Deno.env.get("PORT") ?? 8000);
 const ALLOWED_ORIGIN = Deno.env.get("ALLOWED_ORIGIN") ?? "http://localhost:5173";
 const MAX_BODY_BYTES = 1_000_000; // 1 MB
+const MAX_DISPATCH_BYTES = 12 * 1024 * 1024; // 10 MB attachment + 1 MB CSV + multipart overhead
 const VOTERS_FILE = new URL("./voters.json", import.meta.url);
 
 /** Standard JSON error payload. */
@@ -67,15 +75,8 @@ async function readJsonObject(ctx: Context): Promise<Record<string, unknown> | n
 }
 
 // ---------- Persistence (serialized to avoid concurrent write races) ----------
-
-let writeQueue: Promise<unknown> = Promise.resolve();
-
-/** Runs `task` after all previously queued tasks have settled. */
-function withWriteLock<T>(task: () => Promise<T>): Promise<T> {
-  const run = writeQueue.then(task);
-  writeQueue = run.catch(() => undefined);
-  return run;
-}
+// The write lock (`withWriteLock`) is shared with `adminService.ts` so that every
+// writer of `voters.json` is serialized through the same queue.
 
 /** Reads all stored voters; returns an empty list if the file does not exist yet. */
 async function readVoters(): Promise<VoterRecord[]> {
@@ -170,9 +171,53 @@ router.post("/api/admin/voters/upload", async (ctx) => {
 });
 
 /**
+ * POST /api/admin/dispatch
+ * Body: multipart/form-data with fields
+ *   `title` (text), `description` (text), `attachment` (file), `votersCsv` (file, .csv).
+ * Creates the motion, imports the voters (unique token each, bound to the new `motionId`),
+ * stores the attachment in `server/uploads/` and dispatches the personalized emails
+ * (simulated via console logging).
+ * 201 -> { motionId, imported, emailsSent }; 400 -> invalid form data; 413 -> too large;
+ * 415 -> not multipart; 422 -> invalid CSV; 500 -> persistence failure.
+ * TODO: protect with SSO/admin middleware (the prototype relies on frontend routing only).
+ */
+router.post("/api/admin/dispatch", async (ctx) => {
+  const contentType = ctx.request.headers.get("content-type") ?? "";
+  if (!contentType.toLowerCase().startsWith("multipart/form-data")) {
+    return sendError(ctx, 415, "Content-Type must be multipart/form-data.");
+  }
+
+  const declaredLength = Number(ctx.request.headers.get("content-length") ?? 0);
+  if (declaredLength > MAX_DISPATCH_BYTES) {
+    return sendError(ctx, 413, "Payload too large.");
+  }
+
+  // Oak 17 equivalent of the legacy `request.body({ type: "form-data" })` API.
+  let formData: FormData;
+  try {
+    formData = await ctx.request.body.formData();
+  } catch {
+    return sendError(ctx, 400, "Unable to read multipart form data.");
+  }
+
+  try {
+    const result = await processAdminDispatch(formData);
+    ctx.response.status = 201;
+    ctx.response.body = result;
+  } catch (error) {
+    if (error instanceof AdminServiceError) {
+      return sendError(ctx, error.status, error.message, error.details);
+    }
+    console.error("Failed to process admin dispatch:", error);
+    sendError(ctx, 500, "Failed to create the motion and dispatch emails.");
+  }
+});
+
+/**
  * POST /api/vote
  * Body (JSON): { "token": "...", "motionId": "...", "choice": "..." }
- * 200 -> Success; 400 -> Missing fields; 404 -> Invalid token; 403 -> Already voted.
+ * 200 -> Success; 400 -> Missing fields; 404 -> Invalid token (or token of another motion);
+ * 403 -> Already voted.
  */
 router.post("/api/vote", async (ctx) => {
   try {
@@ -183,6 +228,9 @@ router.post("/api/vote", async (ctx) => {
     if (!token || !motionId || !choice) {
       return sendError(ctx, 400, "Missing required fields: token, motionId, and choice.");
     }
+
+    // A token issued for one motion must never be accepted for another one.
+    await assertTokenMatchesMotion(token, motionId);
 
     // Delegate the vote processing to the service layer
     await processVote(token, motionId, choice);

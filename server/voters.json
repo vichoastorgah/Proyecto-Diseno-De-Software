@@ -1,22 +1,32 @@
 [
   {
-    "email": "gerente@empresa.com",
-    "name": "Ana Silva",
-    "birthdate": "1985-05-14",
-    "gender": "f",
-    "weight": 1,
-    "token": "728e7e8a-61d6-4494-848a-db8bf350d0a6",
-    "tokenExpiresAt": "2026-10-13T22:45:34.826Z",
-    "hasVoted": true
+    "email": "ana.garcia@example.com",
+    "name": "Ana Garcia",
+    "birthdate": "1990-04-12",
+    "gender": "female",
+    "weight": 62,
+    "token": "1321aaf30026a7b38d522b952fda85269a1c7d691b668ff9330b887a9cd29238",
+    "hasVoted": false,
+    "motionId": "0330c4a3-babe-4864-a8f7-7f2828cdc926"
   },
   {
-    "email": "analista@empresa.com",
-    "name": "Diego Gomez",
-    "birthdate": "1992-08-22",
-    "gender": "m",
-    "weight": 1,
-    "token": "d852f754-abe0-41f3-acbc-fea98a9cec0c",
-    "tokenExpiresAt": "2026-10-13T22:45:34.826Z",
-    "hasVoted": true
+    "email": "carlos.perez@example.com",
+    "name": "Carlos Perez",
+    "birthdate": "1985-09-30",
+    "gender": "male",
+    "weight": 78,
+    "token": "222f88dfa0e31430fb26f77dd94112da4f027f56b227d46e60780e0ee6aaaa5e",
+    "hasVoted": false,
+    "motionId": "0330c4a3-babe-4864-a8f7-7f2828cdc926"
+  },
+  {
+    "email": "alex.rivera@example.com",
+    "name": "Alex Rivera",
+    "birthdate": "1998-01-22",
+    "gender": "other",
+    "weight": 70,
+    "token": "2ea34649d4fdd1cfdccc3d18367fb389c6b06d4f0be306c5d7675171570bc3ac",
+    "hasVoted": false,
+    "motionId": "0330c4a3-babe-4864-a8f7-7f2828cdc926"
   }
 ]

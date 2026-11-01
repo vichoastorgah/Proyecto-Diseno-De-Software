@@ -14,7 +14,7 @@ import { createContext, useCallback, useContext, useMemo, useState } from "react
  */
 
 /** @type {import("react").Context<AuthContextValue|null>} */
-const AuthContext = createContext(null);
+export const AuthContext = createContext(null);
 
 /**
  * Provides authentication state to the whole component tree.

@@ -44,17 +44,29 @@
       "network": "No se pudo conectar con el servidor. Por favor, inténtelo de nuevo."
     }
   },
-  "admin": {
+   "admin": {
     "title": "Portal de Administración",
-    "description": "Suba un archivo CSV para registrar la lista de votantes.",
+    "description": "Cree una moción de votación, suba la lista de votantes y envíe correos personalizados con el archivo adjunto.",
+    "motionTitleLabel": "Título de la moción",
+    "motionTitlePlaceholder": "p. ej. Aprobar el presupuesto anual 2026",
+    "motionDescriptionLabel": "Descripción de la moción",
+    "motionDescriptionPlaceholder": "Describa qué se pide decidir a los votantes",
+    "attachmentLabel": "Archivo adjunto",
+    "attachmentHelp": "Este archivo se envía por correo a cada votante (máx. 10 MB).",
     "csvLabel": "Archivo CSV de votantes",
+    "csvHelp": "Columnas requeridas: email, name, birthdate (AAAA-MM-DD), gender, weight.",
     "selected": "Seleccionado: {fileName}",
-    "upload": "Subir CSV",
-    "uploading": "Subiendo...",
-    "success": "Votantes cargados con éxito.",
+    "dispatch": "Crear moción y enviar correos",
+    "dispatching": "Enviando...",
+    "success": "Moción creada. Se enviaron {count} correos personalizados.",
     "errors": {
-      "noFile": "Por favor, seleccione primero un archivo CSV.",
-      "invalidExtension": "Solo se permiten archivos .csv.",
+      "noTitle": "Por favor, ingrese un título para la moción.",
+      "noDescription": "Por favor, ingrese una descripción para la moción.",
+      "noAttachment": "Por favor, seleccione un archivo para adjuntar.",
+      "attachmentTooLarge": "El archivo adjunto supera el límite de {maxMb} MB.",
+      "noCsv": "Por favor, seleccione primero un archivo CSV de votantes.",
+      "invalidExtension": "Solo se permiten archivos .csv para la lista de votantes.",
+      "csvTooLarge": "El CSV de votantes supera el límite de {maxMb} MB.",
       "unexpected": "Ocurrió un error inesperado."
     }
   },

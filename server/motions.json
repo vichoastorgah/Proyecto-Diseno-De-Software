@@ -1,14 +1,15 @@
-{
-  "motions": [
-    {
-      "id": "motion-001",
-      "title": "Approve the 2026 annual budget",
-      "status": "open",
-      "results": {
-        "approve": 2,
-        "reject": 0,
-        "abstain": 0
-      }
-    }
-  ]
-}
+[
+  {
+    "id": "0330c4a3-babe-4864-a8f7-7f2828cdc926",
+    "title": "Prueba 2.1",
+    "description": "SOS",
+    "attachment": {
+      "originalName": "21.920.868-5-256749.pdf",
+      "storedName": "0330c4a3-babe-4864-a8f7-7f2828cdc926-21.920.868-5-256749.pdf",
+      "mimeType": "application/pdf",
+      "size": 233080
+    },
+    "voterCount": 3,
+    "createdAt": "2026-11-01T23:11:24.650Z"
+  }
+]
