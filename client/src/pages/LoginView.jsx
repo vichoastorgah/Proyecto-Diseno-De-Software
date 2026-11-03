@@ -1,49 +1,49 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
-import { useAuth } from "../context/AuthContext";
+import { GoogleLogin, GoogleOAuthProvider } from "@react-oauth/google";
+import { AuthError, useAuth } from "../context/AuthContext";
 import { useLanguage } from "../context/LanguageContext";
+import { GOOGLE_CLIENT_ID } from "../config";
 
-/** Simulated OAuth redirect delay in milliseconds. */
-const MOCK_SSO_DELAY_MS = 1000;
-
-/** Mock identity returned by the simulated Google Identity provider. */
-const MOCK_SSO_USER = Object.freeze({
-  name: "Admin",
-  email: "admin@uai.cl",
-});
+/** Maps backend error codes to translation keys. */
+const ERROR_KEY_BY_CODE = {
+  SSO_NOT_CONFIGURED: "login.errors.notConfigured",
+  INVALID_CREDENTIAL: "login.errors.invalidCredential",
+  UNAUTHORIZED_USER: "login.errors.notAuthorized",
+  NETWORK: "login.errors.network",
+};
 
 function LoginView() {
-  const { user, login } = useAuth();
-  const { t } = useLanguage();
+  const { user, loginWithGoogle } = useAuth();
+  const { t, language } = useLanguage();
   const navigate = useNavigate();
-  const [isLoading, setIsLoading] = useState(false);
-  const timeoutRef = useRef(null);
-
-  // Clear the pending timer if the component unmounts mid-"redirect".
-  useEffect(() => {
-    return () => {
-      if (timeoutRef.current !== null) {
-        clearTimeout(timeoutRef.current);
-      }
-    };
-  }, []);
+  const [isSigningIn, setIsSigningIn] = useState(false);
+  // Holds a translation KEY so the message follows the language switch.
+  const [errorKey, setErrorKey] = useState(
+    GOOGLE_CLIENT_ID ? null : "login.errors.missingClientId"
+  );
 
   // Already authenticated users do not need to see the login screen.
   if (user) {
     return <Navigate replace to="/admin" />;
   }
 
-  const handleSsoLogin = () => {
-    if (isLoading) {
+  const handleGoogleSuccess = async (credentialResponse) => {
+    if (!credentialResponse.credential) {
+      setErrorKey("login.errors.googleFailed");
       return;
     }
-    setIsLoading(true);
 
-    timeoutRef.current = setTimeout(() => {
-      timeoutRef.current = null;
-      login({ ...MOCK_SSO_USER });
+    setErrorKey(null);
+    setIsSigningIn(true);
+    try {
+      await loginWithGoogle(credentialResponse.credential);
       navigate("/admin", { replace: true });
-    }, MOCK_SSO_DELAY_MS);
+    } catch (error) {
+      const code = error instanceof AuthError ? error.code : "UNEXPECTED";
+      setErrorKey(ERROR_KEY_BY_CODE[code] ?? "login.errors.unexpected");
+      setIsSigningIn(false);
+    }
   };
 
   return (
@@ -55,30 +55,39 @@ function LoginView() {
               <h1 className="h3 fw-bold mb-2">{t("login.title")}</h1>
               <p className="text-muted mb-4">{t("login.subtitle")}</p>
 
-              <button
-                type="button"
-                className="btn btn-primary btn-lg w-100 d-flex align-items-center justify-content-center gap-2"
-                onClick={handleSsoLogin}
-                disabled={isLoading}
-              >
-                {isLoading ? (
-                  <>
-                    <span
-                      className="spinner-border spinner-border-sm"
-                      role="status"
-                      aria-hidden="true"
-                    ></span>
-                    <span>{t("login.signingIn")}</span>
-                  </>
-                ) : (
-                  <>
-                    <i className="bi bi-google" aria-hidden="true"></i>
-                    <span>{t("login.googleButton")}</span>
-                  </>
-                )}
-              </button>
+              {errorKey && (
+                <div className="alert alert-danger" role="alert">
+                  {t(errorKey)}
+                </div>
+              )}
 
-              <p className="small text-muted mt-4 mb-0">{t("login.mockNotice")}</p>
+              {isSigningIn && (
+                <div className="d-flex align-items-center justify-content-center gap-2">
+                  <span
+                    className="spinner-border spinner-border-sm"
+                    role="status"
+                    aria-hidden="true"
+                  ></span>
+                  <span>{t("login.signingIn")}</span>
+                </div>
+              )}
+
+              {GOOGLE_CLIENT_ID && !isSigningIn && (
+                <GoogleOAuthProvider clientId={GOOGLE_CLIENT_ID}>
+                  <div className="d-flex justify-content-center">
+                    <GoogleLogin
+                      onSuccess={handleGoogleSuccess}
+                      onError={() => setErrorKey("login.errors.googleFailed")}
+                      locale={language}
+                      text="signin_with"
+                      shape="rectangular"
+                      width="280"
+                    />
+                  </div>
+                </GoogleOAuthProvider>
+              )}
+
+              <p className="small text-muted mt-4 mb-0">{t("login.ssoNotice")}</p>
             </div>
           </div>
         </div>

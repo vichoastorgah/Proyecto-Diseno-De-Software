@@ -231,9 +231,8 @@ function DispatchForm({
 
 export default function AdminView() {
   const { t } = useContext(LanguageContext);
-  // Mock SSO: AuthContext only exposes { user, login, logout } in React state.
-  // It is used here purely as a client-side guard for the protected route.
-  const { user } = useContext(AuthContext);
+  // Google SSO session: `authHeaders()` returns the Bearer token the backend requires.
+  const { user, authHeaders } = useContext(AuthContext);
 
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -304,6 +303,7 @@ export default function AdminView() {
       try {
         response = await fetch(DISPATCH_URL, {
           method: "POST",
+          headers: authHeaders(),
           body: formData,
         });
       } catch {

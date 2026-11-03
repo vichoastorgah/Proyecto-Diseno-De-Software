@@ -16,15 +16,15 @@ function App() {
           <Navbar />
           <main className="container mt-4 mb-5">
             <Routes>
-              {/* Ruta principal redirige al cuestionario público */}
+              {/* The root path redirects to the public survey dashboard */}
               <Route path="/" element={<Navigate replace to="/survey" />} />
-              
-              {/* Rutas Públicas */}
+
+              {/* Public routes */}
               <Route path="/login" element={<LoginView />} />
               <Route path="/survey" element={<SurveyView />} />
               <Route path="/vote" element={<VotingView />} />
-              
-              {/* Ruta Protegida (Hito 4B: SSO) */}
+
+              {/* Protected route: requires a Google SSO session */}
               <Route
                 path="/admin"
                 element={
@@ -33,8 +33,8 @@ function App() {
                   </ProtectedRoute>
                 }
               />
-              
-              {/* Ruta salvavidas (Catch-all) para evitar pantallas en blanco */}
+
+              {/* Catch-all route: avoids blank screens on unknown URLs */}
               <Route path="*" element={<Navigate replace to="/survey" />} />
             </Routes>
           </main>

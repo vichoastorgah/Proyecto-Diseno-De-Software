@@ -1,0 +1,15 @@
+# Dependencies
+node_modules/
+
+# Secrets and local configuration
+.env
+client/.env
+
+# Runtime data and temporary files
+server/uploads/
+*.tmp
+
+# Build output and logs
+client/dist/
+*.log
+.DS_Store

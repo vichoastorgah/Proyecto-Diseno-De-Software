@@ -27,12 +27,20 @@
     "title": "Portal de Administración",
     "subtitle": "Inicia sesión para gestionar votaciones y encuestas",
     "googleButton": "Iniciar sesión con Google (SSO)",
-    "signingIn": "Redirigiendo a Google...",
-    "mockNotice": "Modo demo: SSO simulado de Google Identity"
+    "signingIn": "Iniciando sesión...",
+    "ssoNotice": "Usa tu cuenta de Google autorizada para continuar.",
+    "errors": {
+      "missingClientId": "El SSO de Google no está configurado. Define VITE_GOOGLE_CLIENT_ID en client/.env.",
+      "googleFailed": "Falló el inicio de sesión con Google. Inténtalo de nuevo.",
+      "invalidCredential": "Google no pudo verificar tu cuenta. Inténtalo de nuevo.",
+      "notAuthorized": "Esta cuenta de Google no está autorizada para acceder al portal.",
+      "notConfigured": "Falta la configuración de SSO de Google en el servidor.",
+      "network": "No se pudo conectar con el servidor. Inténtalo de nuevo.",
+      "unexpected": "Error inesperado al iniciar sesión. Inténtalo de nuevo."
+    }
   },
   "voting": {
     "ballotTitle": "Papeleta Oficial",
-    "motionTitle": "Aprobar el presupuesto anual 2026",
     "approve": "Aprobar",
     "reject": "Rechazar",
     "sending": "Enviando...",
@@ -41,10 +49,23 @@
       "invalidToken": "Token de votación inválido.",
       "alreadyVoted": "El votante ya ha emitido su voto.",
       "unexpected": "Error inesperado. Por favor, inténtelo de nuevo.",
-      "network": "No se pudo conectar con el servidor. Por favor, inténtelo de nuevo."
+      "network": "No se pudo conectar con el servidor. Por favor, inténtelo de nuevo.",
+      "expired": "Este enlace de votación ha expirado.",
+      "motionNotFound": "La moción de este enlace ya no existe.",
+      "invalidOption": "Esa opción no es válida para esta moción."
+    },
+    "loading": "Cargando tu papeleta...",
+    "greeting": "Hola, {name}.",
+    "chooseOption": "Elige una opción. Tu voto no se puede cambiar después.",
+    "validUntil": "Tu enlace es válido hasta el {date}.",
+    "retry": "Reintentar",
+    "options": {
+      "approve": "Aprobar",
+      "reject": "Rechazar",
+      "abstain": "Abstenerse"
     }
   },
-   "admin": {
+  "admin": {
     "title": "Portal de Administración",
     "description": "Cree una moción de votación, suba la lista de votantes y envíe correos personalizados con el archivo adjunto.",
     "motionTitleLabel": "Título de la moción",
@@ -86,7 +107,7 @@
       "invalid": "Ingrese una dirección de correo válida.",
       "refresh": "Actualizar datos",
       "refreshing": "Actualizando...",
-      "demoNote": "Modo demostración: cambie el usuario activo para actuar como un colega delegado."
+      "demoNote": "¿Iniciaste sesión con Google? Las acciones con tu propia cuenta las verifica el servidor. Si no, es modo demo: cambia el usuario activo para actuar como un colega delegado."
     },
     "progress": {
       "title": "Progreso Global",
@@ -132,7 +153,8 @@
       "marketing": "Marketing",
       "compliance": "Cumplimiento",
       "security": "Seguridad",
-      "sales": "Ventas"
+      "sales": "Ventas",
+      "environment": "Medio ambiente"
     }
   }
 }

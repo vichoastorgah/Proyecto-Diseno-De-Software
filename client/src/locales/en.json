@@ -27,12 +27,20 @@
     "title": "Admin Portal",
     "subtitle": "Sign in to manage votes and surveys",
     "googleButton": "Sign in with Google (SSO)",
-    "signingIn": "Redirecting to Google...",
-    "mockNotice": "Demo mode: simulated Google Identity SSO"
+    "signingIn": "Signing you in...",
+    "ssoNotice": "Use your authorized Google account to continue.",
+    "errors": {
+      "missingClientId": "Google SSO is not configured. Set VITE_GOOGLE_CLIENT_ID in client/.env.",
+      "googleFailed": "Google sign-in failed. Please try again.",
+      "invalidCredential": "Google could not verify your account. Please try again.",
+      "notAuthorized": "This Google account is not authorized to access the portal.",
+      "notConfigured": "The server is missing its Google SSO configuration.",
+      "network": "Unable to reach the server. Please try again.",
+      "unexpected": "Unexpected error while signing in. Please try again."
+    }
   },
   "voting": {
     "ballotTitle": "Official Ballot",
-    "motionTitle": "Approve the 2026 annual budget",
     "approve": "Approve",
     "reject": "Reject",
     "sending": "Sending...",
@@ -41,7 +49,20 @@
       "invalidToken": "Invalid voting token.",
       "alreadyVoted": "Voter has already cast a vote.",
       "unexpected": "Unexpected error. Please try again.",
-      "network": "Unable to reach the server. Please try again."
+      "network": "Unable to reach the server. Please try again.",
+      "expired": "This voting link has expired.",
+      "motionNotFound": "The motion for this link no longer exists.",
+      "invalidOption": "That option is not valid for this motion."
+    },
+    "loading": "Loading your ballot...",
+    "greeting": "Hello, {name}.",
+    "chooseOption": "Choose one option. Your vote cannot be changed afterwards.",
+    "validUntil": "Your link is valid until {date}.",
+    "retry": "Try again",
+    "options": {
+      "approve": "Approve",
+      "reject": "Reject",
+      "abstain": "Abstain"
     }
   },
   "admin": {
@@ -86,7 +107,7 @@
       "invalid": "Enter a valid email address.",
       "refresh": "Refresh data",
       "refreshing": "Refreshing...",
-      "demoNote": "Demo mode: switch the active user to act as a delegated colleague."
+      "demoNote": "Signed in with Google? Actions as your own account are verified by the server. Otherwise this is demo mode: switch the active user to act as a delegated colleague."
     },
     "progress": {
       "title": "Global Progress",
@@ -132,7 +153,8 @@
       "marketing": "Marketing",
       "compliance": "Compliance",
       "security": "Security",
-      "sales": "Sales"
+      "sales": "Sales",
+      "environment": "Environment"
     }
   }
 }

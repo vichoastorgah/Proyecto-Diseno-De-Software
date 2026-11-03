@@ -1,4 +1,5 @@
 import { useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { AuthContext } from "../context/AuthContext";
 import { LanguageContext } from "../context/LanguageContext";
 
 const API_BASE = "http://localhost:8000";
@@ -113,12 +114,16 @@ function isDelegated(question) {
   );
 }
 
-async function postJson(url, payload) {
+/**
+ * POSTs JSON and returns the parsed body.
+ * `extraHeaders` carries the Google SSO Bearer token when the acting user is signed in.
+ */
+async function postJson(url, payload, extraHeaders = {}) {
   let response;
   try {
     response = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...extraHeaders },
       body: JSON.stringify(payload),
     });
   } catch {
@@ -483,9 +488,11 @@ function CategorySection({ category, items, isOpen, onToggle, activeEmail, busy,
 
 export default function SurveyView() {
   const { t } = useContext(LanguageContext);
+  // Signed-in Google user (if any): the server verifies this identity through the session token.
+  const { user, authHeaders } = useContext(AuthContext);
 
   const [survey, setSurvey] = useState(null);
-  const [activeEmail, setActiveEmail] = useState("");
+  const [activeEmail, setActiveEmail] = useState(user?.email ?? "");
   const [openCategories, setOpenCategories] = useState(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -564,7 +571,11 @@ export default function SurveyView() {
       setBusy(true);
       setFeedback(null);
       try {
-        const data = await postJson(url, payload);
+        // Send the session token only when acting as the signed-in user; the server then
+        // takes the identity from the verified session instead of the request body.
+        const actor = payload.userEmail ?? payload.currentOwnerEmail ?? "";
+        const headers = user && normalizeEmail(actor) === normalizeEmail(user.email) ? authHeaders() : {};
+        const data = await postJson(url, payload, headers);
         applySurvey(data.survey);
         setFeedback(
           data.message
@@ -585,7 +596,7 @@ export default function SurveyView() {
         setBusy(false);
       }
     },
-    [applySurvey, fetchSurvey],
+    [applySurvey, fetchSurvey, user, authHeaders],
   );
 
   const handleAnswer = useCallback(

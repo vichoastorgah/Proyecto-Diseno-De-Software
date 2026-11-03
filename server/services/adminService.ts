@@ -1,13 +1,17 @@
 /**
  * @module services/adminService
- * Motion creation, voters CSV import, attachment storage and (simulated)
- * personalized email dispatch for the Admin Portal.
+ * Motion creation, voters CSV import, attachment storage and personalized email
+ * dispatch (real SMTP, or console simulation when credentials are missing) for the
+ * Admin Portal.
  *
  * Persistence layout (relative to the `server/` directory):
  *   - voters.json   -> one record per voter per motion (unique token, `hasVoted` flag, `motionId`)
- *   - motions.json  -> one record per motion
+ *   - motions.json  -> one record per motion (`options` and `results` follow the unified schema)
  *   - uploads/      -> stored attachments (created programmatically when missing)
  */
+import { withWriteLock } from "../utils/fileLock.ts";
+import { sendRealPersonalizedEmail, type DeliveryMode } from "./emailService.ts";
+import { DEFAULT_TOKEN_TTL_MS } from "./voterService.ts";
 
 const VOTERS_FILE = new URL("../voters.json", import.meta.url);
 const MOTIONS_FILE = new URL("../motions.json", import.meta.url);
@@ -37,6 +41,12 @@ const BLOCKED_ATTACHMENT_EXTENSIONS = new Set([
 ]);
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+/** Voting options used when the form does not provide any. */
+const DEFAULT_OPTIONS: readonly string[] = ["approve", "reject"];
+const MIN_OPTIONS = 2;
+const MAX_OPTIONS = 10;
+const MAX_OPTION_LENGTH = 60;
+
 // ---------- Contracts ----------
 
 export type Gender = "male" | "female" | "other";
@@ -49,6 +59,8 @@ export interface MotionVoterRecord {
   gender: Gender;
   weight: number;
   token: string;
+  /** ISO timestamp after which the token is rejected (48 hours after creation). */
+  tokenExpiresAt: string;
   hasVoted: false;
   motionId: string;
 }
@@ -66,6 +78,10 @@ export interface MotionRecord {
   title: string;
   description: string;
   attachment: AttachmentInfo;
+  /** Voting options (unified motions schema). */
+  options: string[];
+  /** Weighted tally per option; starts at zero. */
+  results: Record<string, number>;
   voterCount: number;
   createdAt: string;
 }
@@ -75,6 +91,10 @@ export interface DispatchResult {
   motionId: string;
   imported: number;
   emailsSent: number;
+  /** Emails that could not be delivered. */
+  emailsFailed: string[];
+  /** `smtp` for real delivery, `simulated` for the console fallback. */
+  deliveryMode: DeliveryMode;
 }
 
 /** Business error carrying the HTTP status the route should answer with. */
@@ -103,18 +123,8 @@ interface ValidatedDispatchInput {
   description: string;
   attachmentFile: File;
   attachmentBytes: Uint8Array;
+  options: string[];
   voters: ParsedVoter[];
-}
-
-// ---------- Write serialization (shared with server.ts) ----------
-
-let writeQueue: Promise<unknown> = Promise.resolve();
-
-/** Runs `task` after all previously queued tasks have settled. */
-export function withWriteLock<T>(task: () => Promise<T>): Promise<T> {
-  const run = writeQueue.then(task);
-  writeQueue = run.catch(() => undefined);
-  return run;
 }
 
 // ---------- Form validation ----------
@@ -127,6 +137,33 @@ function readTextField(formData: FormData, name: string): string {
 function readFileField(formData: FormData, name: string): File | null {
   const value = formData.get(name);
   return value instanceof File ? value : null;
+}
+
+/**
+ * Parses the optional `options` field (comma or newline separated).
+ * Falls back to approve/reject when the field is empty.
+ *
+ * @throws {AdminServiceError} 400 if there are fewer than 2 or more than 10 unique options,
+ *         or an option is too long.
+ */
+function parseOptions(raw: string): string[] {
+  if (raw === "") return [...DEFAULT_OPTIONS];
+
+  const options = [
+    ...new Set(
+      raw.split(/[\n,]/).map((option) => option.trim()).filter((option) => option !== ""),
+    ),
+  ];
+  if (options.length < MIN_OPTIONS || options.length > MAX_OPTIONS) {
+    throw new AdminServiceError(
+      400,
+      `options must contain between ${MIN_OPTIONS} and ${MAX_OPTIONS} unique values.`,
+    );
+  }
+  if (options.some((option) => option.length > MAX_OPTION_LENGTH)) {
+    throw new AdminServiceError(400, `Each option must be at most ${MAX_OPTION_LENGTH} characters.`);
+  }
+  return options;
 }
 
 /** Strips any path and unsafe characters from a user-supplied file name. */
@@ -408,9 +445,11 @@ function persistMotion(
       if (typeof voter.token === "string") usedTokens.add(voter.token);
     }
 
+    const tokenExpiresAt = new Date(Date.now() + DEFAULT_TOKEN_TTL_MS).toISOString();
     const records: MotionVoterRecord[] = voters.map((voter) => ({
       ...voter,
       token: generateUniqueToken(usedTokens),
+      tokenExpiresAt,
       hasVoted: false,
       motionId: motion.id,
     }));
@@ -424,60 +463,47 @@ function persistMotion(
   });
 }
 
-// ---------- Token <-> motion linkage ----------
+// ---------- Email dispatch ----------
 
-/**
- * Guards the voting path: a token issued for one motion must not be usable on another.
- * Tokens that are unknown are left for the voting service to reject, and legacy voter
- * records without a `motionId` (created by the CSV-only upload route) are accepted.
- *
- * @throws {Error} With an "Invalid Token" message when the token belongs to another motion.
- */
-export async function assertTokenMatchesMotion(
-  token: unknown,
-  motionId: unknown,
-): Promise<void> {
-  const voters = await readJsonArray(VOTERS_FILE, "voters.json");
-  const voter = voters.find((candidate) => candidate.token === token);
-  if (!voter) return;
-
-  if (typeof voter.motionId === "string" && voter.motionId !== motionId) {
-    throw new Error("Invalid Token: token does not belong to this motion.");
-  }
-}
-
-// ---------- Email dispatch (simulated) ----------
-
-/** Builds the personalized greeting using the voter's name and gender. */
-export function buildGreeting(name: string, gender: Gender): string {
-  switch (gender) {
-    case "male":
-      return `Dear Mr. ${name}`;
-    case "female":
-      return `Dear Ms. ${name}`;
-    default:
-      return `Dear ${name}`;
-  }
+/** Delivery summary returned by {@link dispatchEmails}. */
+export interface DispatchSummary {
+  sent: number;
+  failed: string[];
+  mode: DeliveryMode;
 }
 
 /**
- * Simulated email dispatcher: logs one line per voter instead of using SMTP.
+ * Sends one personalized email per voter, sequentially, attaching the motion's document.
+ * A failure for one recipient never aborts the rest. Without SMTP credentials the
+ * messages are printed to the console (see `emailService.ts`).
  *
- * @returns The number of emails "sent".
+ * @param motion Motion whose title is used in the message.
+ * @param voters Voters (with their tokens) to invite.
+ * @param attachmentFile Stored attachment to send along.
+ * @param attachmentName Original file name shown to the recipient.
  */
-export function dispatchEmails(
-  motion: Pick<MotionRecord, "title" | "attachment">,
+export async function dispatchEmails(
+  motion: Pick<MotionRecord, "title">,
   voters: readonly MotionVoterRecord[],
-): number {
+  attachmentFile: URL,
+  attachmentName: string,
+): Promise<DispatchSummary> {
+  const summary: DispatchSummary = { sent: 0, failed: [], mode: "simulated" };
+
   for (const voter of voters) {
-    console.log(
-      `Sending email to ${voter.name} (${voter.gender}) at ${voter.email} ` +
-        `with attachment ${motion.attachment.originalName}. ` +
-        `Link: /vote?token=${voter.token}`,
-    );
-    console.log(`  Subject: ${motion.title} | Greeting: ${buildGreeting(voter.name, voter.gender)},`);
+    try {
+      const result = await sendRealPersonalizedEmail(voter, voter.token, attachmentFile, {
+        motionTitle: motion.title,
+        attachmentName,
+      });
+      summary.mode = result.mode;
+      summary.sent += 1;
+    } catch (error) {
+      console.error(`Failed to send invitation to ${voter.email}:`, error);
+      summary.failed.push(voter.email);
+    }
   }
-  return voters.length;
+  return summary;
 }
 
 // ---------- Public API ----------
@@ -521,10 +547,11 @@ async function validateDispatchInput(formData: FormData): Promise<ValidatedDispa
     throw new AdminServiceError(413, "Voters CSV too large.");
   }
 
+  const options = parseOptions(readTextField(formData, "options"));
   const voters = parseDispatchCsv(await csvFile.text());
   const attachmentBytes = new Uint8Array(await attachmentFile.arrayBuffer());
 
-  return { title, description, attachmentFile, attachmentBytes, voters };
+  return { title, description, attachmentFile, attachmentBytes, options, voters };
 }
 
 /**
@@ -538,7 +565,7 @@ async function validateDispatchInput(formData: FormData): Promise<ValidatedDispa
  *   4. Dispatch emails only after the data is safely persisted.
  *
  * @param formData Parsed `multipart/form-data` with fields `title`, `description`,
- *                 `attachment` (file) and `votersCsv` (file).
+ *                 `attachment` (file), `votersCsv` (file) and the optional `options`.
  * @throws {AdminServiceError} For any validation or business failure.
  */
 export async function processAdminDispatch(formData: FormData): Promise<DispatchResult> {
@@ -567,6 +594,8 @@ export async function processAdminDispatch(formData: FormData): Promise<Dispatch
       mimeType: input.attachmentFile.type || "application/octet-stream",
       size: input.attachmentFile.size,
     },
+    options: input.options,
+    results: Object.fromEntries(input.options.map((option) => [option, 0])),
     voterCount: input.voters.length,
     createdAt: new Date().toISOString(),
   };
@@ -580,7 +609,13 @@ export async function processAdminDispatch(formData: FormData): Promise<Dispatch
     throw new AdminServiceError(500, "Failed to save the motion and voters.");
   }
 
-  const emailsSent = dispatchEmails(motion, records);
+  const delivery = await dispatchEmails(motion, records, storedFile, safeFileName);
 
-  return { motionId, imported: records.length, emailsSent };
+  return {
+    motionId,
+    imported: records.length,
+    emailsSent: delivery.sent,
+    emailsFailed: delivery.failed,
+    deliveryMode: delivery.mode,
+  };
 }

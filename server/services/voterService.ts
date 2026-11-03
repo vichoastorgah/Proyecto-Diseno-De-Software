@@ -1,8 +1,11 @@
 /**
  * @module voterService
- * Pure, side-effect-free voter logic (except the mock email logger).
- * No HTTP and no file-system access here: the HTTP layer lives in `server.ts`.
+ * Voter CSV parsing, token generation and `voters.json` persistence.
+ * Parsing and token logic are pure functions. All writes to `voters.json` are serialized
+ * through the shared `withWriteLock` queue. Email delivery lives in `emailService.ts`
+ * and the HTTP layer lives in `server.ts`.
  */
+import { withWriteLock } from "../utils/fileLock.ts";
 
 /** Exact CSV columns required by the upload contract. */
 export const EXPECTED_COLUMNS = [
@@ -16,8 +19,8 @@ export const EXPECTED_COLUMNS = [
 /** Maximum number of voter rows accepted in a single upload. */
 export const MAX_CSV_ROWS = 10_000;
 
-/** Default token lifetime (7 days). */
-export const DEFAULT_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+/** Default token lifetime (48 hours). */
+export const DEFAULT_TOKEN_TTL_MS = 48 * 60 * 60 * 1000;
 
 const MAX_EMAIL_LENGTH = 254;
 const MAX_NAME_LENGTH = 120;
@@ -60,6 +63,8 @@ export interface VoterRecord extends VoterCsvRow {
   /** ISO timestamp after which the token must be rejected. */
   tokenExpiresAt: string;
   hasVoted: boolean;
+  /** Motion this token is bound to; it is rejected for any other motion. */
+  motionId: string;
 }
 
 /** Thrown internally when the CSV text is structurally malformed. */
@@ -238,15 +243,60 @@ export function generateVoteToken(): string {
   return crypto.randomUUID();
 }
 
+// ---------- Persistence (every write is serialized through `withWriteLock`) ----------
+
+const VOTERS_FILE = new URL("../voters.json", import.meta.url);
+const VOTERS_TEMP_FILE = new URL("../voters.json.tmp", import.meta.url);
+
+/** Reads all stored voters; returns an empty list if the file does not exist yet. */
+export async function readVoters(): Promise<VoterRecord[]> {
+  try {
+    const parsed: unknown = JSON.parse(await Deno.readTextFile(VOTERS_FILE));
+    if (!Array.isArray(parsed)) throw new Error("voters.json is corrupted.");
+    return parsed as VoterRecord[];
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return [];
+    throw error;
+  }
+}
+
+/** Atomically writes voters (temp file + rename). Call it only while holding the lock. */
+async function writeVoters(voters: readonly VoterRecord[]): Promise<void> {
+  await Deno.writeTextFile(VOTERS_TEMP_FILE, JSON.stringify(voters, null, 2));
+  await Deno.rename(VOTERS_TEMP_FILE, VOTERS_FILE);
+}
+
+/**
+ * Appends new voters, refusing the whole batch if any email already exists for the same
+ * motion (protects existing tokens and `hasVoted` state). The same email may legitimately
+ * appear in different motions: each motion issues its own token.
+ *
+ * @returns Conflicting emails, or an empty array if the batch was saved.
+ */
+export function appendVoters(newVoters: readonly VoterRecord[]): Promise<string[]> {
+  return withWriteLock(async () => {
+    const existing = await readVoters();
+    const taken = new Set(existing.map((voter) => `${voter.motionId}|${voter.email}`));
+    const conflicts = newVoters
+      .filter((voter) => taken.has(`${voter.motionId}|${voter.email}`))
+      .map((voter) => voter.email);
+    if (conflicts.length > 0) return conflicts;
+    await writeVoters([...existing, ...newVoters]);
+    return [];
+  });
+}
+
 /**
  * Turns validated CSV rows into voter records with a fresh token each.
  *
  * @param rows Validated rows from {@link parseVotersCsv}.
- * @param ttlMs Token lifetime in milliseconds.
+ * @param motionId Motion the tokens are bound to.
+ * @param ttlMs Token lifetime in milliseconds (default 48 hours).
  * @param now Injectable clock (keeps the function testable).
  */
 export function buildVoterRecords(
   rows: readonly VoterCsvRow[],
+  motionId: string,
   ttlMs: number = DEFAULT_TOKEN_TTL_MS,
   now: Date = new Date(),
 ): VoterRecord[] {
@@ -256,44 +306,6 @@ export function buildVoterRecords(
     token: generateVoteToken(),
     tokenExpiresAt: expiresAt,
     hasVoted: false,
+    motionId,
   }));
-}
-
-/** Builds the personalized salutation from the voter's gender and name. */
-function buildGreeting(voter: VoterCsvRow): string {
-  switch (voter.gender) {
-    case "male":
-    case "m":
-      return `Dear Mr. ${voter.name}`;
-    case "female":
-    case "f":
-      return `Dear Ms. ${voter.name}`;
-    default:
-      return `Dear ${voter.name}`;
-  }
-}
-
-/**
- * MOCK: simulates sending a personalized email by logging it to the console.
- * Replace the body with a real SMTP/API provider later; the signature stays.
- *
- * @param voter Recipient.
- * @param token Single-use token embedded in the voting link.
- */
-export function sendPersonalizedEmail(voter: VoterCsvRow, token: string): void {
-  const baseUrl = Deno.env.get("VOTE_BASE_URL") ?? "http://localhost:5173/vote";
-  const link = `${baseUrl}?token=${encodeURIComponent(token)}`;
-  console.log(
-    [
-      "---------- [MOCK EMAIL] ----------",
-      `To: ${voter.email}`,
-      "Subject: Your personal voting link",
-      "",
-      `${buildGreeting(voter)},`,
-      "",
-      "You have been invited to vote. Use your personal, single-use link:",
-      link,
-      "----------------------------------",
-    ].join("\n"),
-  );
 }
