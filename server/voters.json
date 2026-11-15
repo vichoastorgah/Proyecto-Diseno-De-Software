@@ -28,5 +28,38 @@
     "token": "2ea34649d4fdd1cfdccc3d18367fb389c6b06d4f0be306c5d7675171570bc3ac",
     "hasVoted": false,
     "motionId": "0330c4a3-babe-4864-a8f7-7f2828cdc926"
+  },
+  {
+    "email": "ana.garcia@example.com",
+    "name": "Ana Garcia",
+    "birthdate": "1990-04-12",
+    "gender": "female",
+    "weight": 62,
+    "token": "b2a125829a32bae8a48ddbf81246b84fb7a90206cbf31939178ed2ed39b9c4c5",
+    "tokenExpiresAt": "2026-11-17T15:27:52.485Z",
+    "hasVoted": true,
+    "motionId": "6a9464b9-9b53-4223-bbf0-61d9cc467c1f"
+  },
+  {
+    "email": "carlos.perez@example.com",
+    "name": "Carlos Perez",
+    "birthdate": "1985-09-30",
+    "gender": "male",
+    "weight": 78,
+    "token": "f29f08853accc0f7dcfa954ec9e03ce51fbaae828fe29dc55160ed59e4d3c3d2",
+    "tokenExpiresAt": "2026-11-17T15:27:52.485Z",
+    "hasVoted": false,
+    "motionId": "6a9464b9-9b53-4223-bbf0-61d9cc467c1f"
+  },
+  {
+    "email": "alex.rivera@example.com",
+    "name": "Alex Rivera",
+    "birthdate": "1998-01-22",
+    "gender": "other",
+    "weight": 70,
+    "token": "2ea638521b379ff8e78c33a6ba093c86a43be2a4a123d9d00e5014821c831f14",
+    "tokenExpiresAt": "2026-11-17T15:27:52.485Z",
+    "hasVoted": false,
+    "motionId": "6a9464b9-9b53-4223-bbf0-61d9cc467c1f"
   }
 ]
