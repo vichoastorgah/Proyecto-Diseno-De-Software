@@ -24,15 +24,19 @@ A web platform that manages **weighted electronic votes** and **mass questionnai
 
 ## What changed in this iteration (2026-11-18)
 
-- **Persistence:** JSON files replaced by **SQLite** (Deno's built-in `node:sqlite`) with migrations, foreign keys,
-  constraints and transactions. The former JSON data is imported once, read-only.
+- **Persistence:** JSON files replaced by **PostgreSQL** — Supabase in production (`postgres.js`), PGlite (PostgreSQL
+  in WebAssembly, no install) for development and tests — with migrations, foreign keys, constraints, transactions,
+  row locks and Row Level Security. Attachments in a private Supabase Storage bucket (or a local folder in development).
+  The former JSON data is imported once, read-only.
+- **Secret ballot hardening** after an independent code review: results are shown only once a vote is closed, no time
+  of vote is exposed, placeholder session secrets are rejected, request bodies are size-limited while streaming.
 - **Multiple motions per vote**, anonymous weighted ballots and per-motion integrity check.
 - **Security:** voting tokens stored as SHA-256 hashes, admin/participant roles, the public survey endpoint was removed,
   attachment allow-list with content check, security headers, exact-origin CORS, rate limiting, personal data no longer
   versioned in Git.
 - **Multiple surveys** with atomic delegation of several questions or a whole category and email notifications.
 - **Frontend redesign** of every view, shared UI components, live CSV validation, complete ES/EN dictionaries.
-- **Quality:** 35 backend integration tests, ESLint clean (was 5 errors / 2 warnings), i18n consistency script,
+- **Quality:** 41 backend integration tests (on PostgreSQL), ESLint clean (was 5 errors / 2 warnings), i18n consistency script,
   headless browser checks.
 
 ---
@@ -56,9 +60,9 @@ A web platform that manages **weighted electronic votes** and **mass questionnai
 │   ├── app.ts                      Middleware (errors, security headers, CORS, rate limit) + routes
 │   ├── http/                       Route modules: auth, admin, voting, surveys
 │   ├── services/                   Business logic (elections, voting, surveys, CSV, email, auth, tokens, attachments)
-│   ├── db/                         SQLite connection, schema migrations, legacy JSON import
+│   ├── db/                         PostgreSQL drivers (postgres.js / PGlite), migrations, legacy JSON import
 │   ├── tests/                      Integration tests (app.handle, in-memory DB)
-│   ├── storage/                    SQLite database (git-ignored, created at runtime)
+│   ├── storage/                    Local PGlite database (git-ignored, created at runtime)
 │   └── uploads/                    Attachments (git-ignored)
 ├── samples/                        Fictitious voter CSVs (valid and with errors)
 ├── PROJECT_PROGRESS.md             Work log, traceability and rubric matrices
@@ -91,7 +95,7 @@ npm install
 npm run dev                       # http://localhost:5173
 ```
 
-On the first start the server creates `server/storage/app.db` and, if the former `voters.json`, `motions.json` and
+Without `DATABASE_URL`, the first start creates a local PostgreSQL (PGlite) in `server/storage/pgdata` and, if the former `voters.json`, `motions.json` and
 `data.json` exist in `server/`, imports them once (the files are not modified).
 
 Without `SMTP_USER`/`SMTP_PASS`, emails are **printed in the server console** (including the voting links), which is
@@ -110,7 +114,9 @@ enough for a demo. Try the flow with `samples/voters.example.csv`.
 | `VOTE_TOKEN_TTL_HOURS` | no | Lifetime of voting links (default 48). |
 | `DEFAULT_EMAIL_LANGUAGE` | no | `es` or `en`. |
 | `ALLOWED_ORIGIN` | no | CORS origin(s) of the web app, comma-separated. |
-| `PORT`, `DATABASE_PATH`, `UPLOADS_DIR` | no | Port (8000), SQLite file, attachments folder. |
+| `DATABASE_URL` | production | Supabase PostgreSQL connection string. Empty → local PGlite. |
+| `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_BUCKET` | production | Private Storage bucket for attachments. Empty → local folder. |
+| `PORT`, `DATABASE_PATH`, `UPLOADS_DIR` | no | Port (8000), local PGlite folder, local attachments folder. |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` | no | Real email delivery (for Gmail use an app password). |
 
 Client `.env`: `VITE_API_BASE_URL`, `VITE_GOOGLE_CLIENT_ID`.
@@ -121,7 +127,7 @@ Client `.env`: `VITE_API_BASE_URL`, `VITE_GOOGLE_CLIENT_ID`.
 
 | Command | What it checks |
 |---------|----------------|
-| `deno task test` | 35 integration tests: CSV, elections, attachments, voting (weights, single use, concurrency, expiry, closed votes), surveys (delegation, visibility), auth (roles, expired/tampered sessions), legacy import |
+| `deno task test` | 41 integration tests on PostgreSQL (PGlite): CSV, elections, attachments, voting (weights, single use, concurrency, expiry, closed votes), surveys (delegation, visibility), auth (roles, expired/tampered sessions), legacy import |
 | `deno task check` / `deno task lint` | TypeScript types and lint rules of the server |
 | `cd client && npm run lint` | ESLint (React hooks rules) |
 | `cd client && npm run check:i18n` | Same keys in `es.json`/`en.json`; every `t("…")` key exists |
@@ -154,8 +160,9 @@ Client `.env`: `VITE_API_BASE_URL`, `VITE_GOOGLE_CLIENT_ID`.
 
 ## Deployment
 
-Planned target: static frontend on **Vercel** (env `VITE_API_BASE_URL`, `VITE_GOOGLE_CLIENT_ID`) and the Deno API with
-its database on a host with persistent storage. The options and the decision are tracked in `PROJECT_PROGRESS.md`.
+Target: frontend on **Vercel**, API on **Deno Deploy**, database and files on **Supabase** (PostgreSQL + private
+Storage bucket). Step-by-step guide (Spanish): [`docs/DESPLIEGUE.md`](docs/DESPLIEGUE.md). Status: code ready and
+verified locally against PostgreSQL; publication pending the owner's accounts.
 
 ---
 
@@ -163,7 +170,7 @@ its database on a host with persistent storage. The options and the decision are
 
 This project was developed with AI assistance, as permitted by the course rules.
 
-- **Claude (Anthropic)** was used for architecture review, code generation and refactoring (SQLite migration, voting
+- **Claude (Anthropic)** was used for architecture review, code generation and refactoring (PostgreSQL/Supabase migration, voting
   engine, CSV validation, Google SSO roles, survey delegation, UI redesign, tests and documentation). All generated code
   was reviewed and tested; the author is responsible for understanding it.
 

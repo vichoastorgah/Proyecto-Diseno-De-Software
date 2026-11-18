@@ -1,4 +1,4 @@
-# Server (Deno + Oak + SQLite)
+# Server (Deno + Oak + PostgreSQL)
 
 REST API of the voting and survey system. Run every command from the **repository root** so `.env` and `deno.json`
 are found.
@@ -6,7 +6,7 @@ are found.
 ```bash
 deno task dev      # watch mode, http://localhost:8000
 deno task start    # without watch
-deno task test     # 35 integration tests
+deno task test     # 41 integration tests (PostgreSQL via PGlite)
 deno task check    # type check (server + tests)
 deno task lint
 ```
@@ -26,7 +26,7 @@ server/
 ├── context.ts           ServiceContext { db, config, mailer }
 ├── errors.ts            AppError(status, code, message, details?)
 ├── db/
-│   ├── database.ts      openDatabase, transaction(), all/get/run helpers (node:sqlite, synchronous)
+│   ├── database.ts      Async Db interface: postgres.js (DATABASE_URL, Supabase) or PGlite (local/tests)
 │   ├── schema.ts        Versioned migrations (PRAGMA user_version)
 │   └── legacyImport.ts  One-time, read-only import of voters.json / motions.json / data.json
 ├── http/                Route modules (parsing + role checks only)
@@ -42,9 +42,16 @@ server/
 └── tests/               Deno tests (app.handle with an in-memory database)
 ```
 
-**Why synchronous SQLite?** `node:sqlite` is built into Deno (no dependency) and synchronous. A transaction body is a
-synchronous function, so no other request can interleave between `BEGIN` and `COMMIT` on the single connection.
-Async work (hashing, file I/O, email) happens before or after `transaction()`.
+**Why PostgreSQL with two drivers?** Production uses Supabase PostgreSQL through `postgres.js`. Development and
+tests use **PGlite**, a real PostgreSQL compiled to WebAssembly that runs inside the Deno process (no install), so the
+tests run exactly the SQL used in production. Both drivers normalize BIGINT → number, TIMESTAMPTZ → ISO string and
+DATE → `YYYY-MM-DD`. Concurrency rules rely on PostgreSQL row locks (`SELECT … FOR UPDATE`) and guarded updates.
+
+**Files.** `services/fileStore.ts`: a local folder in development, a private Supabase Storage bucket in production
+(service-role key, server side only).
+
+**Supabase exposure.** Every table has Row Level Security enabled without policies, so the Supabase REST API cannot
+read them with the public anon key; the API connects as the table owner.
 
 ---
 
@@ -82,8 +89,8 @@ All errors: `{ "error": "<English message>", "code": "<STABLE_CODE>", "details"?
 | GET | `/api/admin/elections` | `{ elections: [{ id, title, status, stats }] }` |
 | POST | `/api/admin/elections` (multipart: `title`, `description`, `motions` JSON, `votersCsv`, `attachments`×0-5, `lang`) | 201 `{ electionId, imported, emailsSent, emailsFailed, deliveryMode }` · 400 `VALIDATION_ERROR`, 422 `CSV_VALIDATION_FAILED`, 400/413 `ATTACHMENT_*` |
 | POST | `/api/admin/csv/validate` (multipart `votersCsv`) | `{ totalRecords, validRecords, totalWeight, errors, preview }` (nothing saved) |
-| GET | `/api/admin/elections/:id` | Motions with weighted results and `integrity`, attachments, invitations, stats |
-| GET | `/api/admin/elections/:id/voters?search&status=all\|voted\|pending&page&pageSize` | Paginated voters (no birthdates) |
+| GET | `/api/admin/elections/:id` | Motions, weighted results **only when closed** (`resultsAvailable`; tallies are `null` while open), `integrity`, attachments, invitations, stats |
+| GET | `/api/admin/elections/:id/voters?search&status=all\|voted\|pending&page&pageSize` | Paginated voters (no birthdates, no time of vote) |
 | POST | `/api/admin/elections/:id/voters` (multipart `votersCsv`, `lang`) | 201 · 409 `VOTERS_ALREADY_EXIST` / `ELECTION_CLOSED` |
 | POST | `/api/admin/elections/:id/voters/:voterId/resend?lang=` | New token (old link stops working) · 409 `ALREADY_VOTED` |
 | POST | `/api/admin/elections/:id/status` `{ status: "open"\|"closed" }` | Updated summary |
@@ -113,7 +120,7 @@ Demo mode (`ALLOW_DEMO_SURVEY_IDENTITY=true`): an admin may send `X-Act-As: <ema
 
 ## Rules worth knowing (edge cases)
 
-- **Single vote:** `UPDATE voters SET has_voted = 1 … WHERE id = ? AND has_voted = 0` inside the ballot transaction;
+- **Single vote:** `SELECT … FOR UPDATE` on the voter row, then `UPDATE voters SET has_voted = true … WHERE id = $2 AND has_voted = false` in the ballot transaction;
   zero changed rows means another request already voted (tested with 10 concurrent requests).
 - **Weights** come from the CSV, never from the request. Integrity: per motion, ballot weight = weight of voters who voted.
 - **Expiry:** links expire after `VOTE_TOKEN_TTL_HOURS` (48 h). Imported legacy links without expiry never expire.

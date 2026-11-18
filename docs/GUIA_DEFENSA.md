@@ -10,9 +10,10 @@ La rúbrica evalúa individualmente "comprensión y casos borde" (3 pts) y "preg
 - **Frontend:** React 19 + Vite + Bootstrap 5 (`client/`). Una SPA que solo muestra datos y llama a la API.
   Nunca decide permisos: las reglas viven en el servidor.
 - **Backend:** Deno 2 + Oak 17 en TypeScript (`server/`). Capas:
-  `http/` (lee la petición y revisa el rol) → `services/` (reglas de negocio) → `db/` (SQLite).
-- **Base de datos:** SQLite con el módulo `node:sqlite` que ya trae Deno (sin dependencias). Tablas relacionadas
-  con claves foráneas y restricciones `CHECK`/`UNIQUE`.
+  `http/` (lee la petición y revisa el rol) → `services/` (reglas de negocio) → `db/` (PostgreSQL).
+- **Base de datos:** PostgreSQL. En producción, Supabase (driver `postgres.js`); en desarrollo y pruebas, PGlite
+  (PostgreSQL compilado a WebAssembly que corre dentro de Deno, sin instalar nada). Tablas con claves foráneas,
+  restricciones `CHECK`/`UNIQUE` y Row Level Security. Los adjuntos van a Supabase Storage (bucket privado).
 - **Autenticación:** Google SSO. El navegador obtiene un *ID token* de Google, el servidor lo verifica con las
   claves públicas de Google y entrega su propia sesión firmada (JWT de 8 h).
 - **Errores:** todos los servicios lanzan `AppError(status, code, message, details)`. El cliente traduce el `code`.
@@ -38,7 +39,7 @@ Archivo de entrada: `server/server.ts` → `createApp()` en `server/app.ts`.
 2. Elige una opción por moción, revisa y confirma → `POST /api/vote` con `{ token, choices }`.
 3. `votingService.castBallot`, dentro de una transacción:
    token válido → no ha votado → no expiró → votación abierta → hay una opción válida para **cada** moción →
-   `UPDATE voters SET has_voted = 1 WHERE id = ? AND has_voted = 0` → una papeleta anónima por moción con el peso del votante.
+   `SELECT … FOR UPDATE` (bloquea la fila) → `UPDATE voters SET has_voted = true WHERE id = $2 AND has_voted = false` → una papeleta anónima por moción con el peso del votante.
 
 ### Cuestionarios
 1. El admin crea el cuestionario (`SurveyCreateView.jsx`); cada pregunta se clasifica con `categorizeQuestion`
@@ -60,13 +61,13 @@ Archivo de entrada: `server/server.ts` → `createApp()` en `server/app.ts`.
 | Adjunto `.exe` o un `.exe` renombrado a `.pdf` | Rechazado: lista de extensiones permitidas + revisión de los primeros bytes | `attachmentService.ts` |
 | Nombre de archivo con `../../` | Se guarda como `<uuid>.pdf`; el nombre original solo se muestra | `attachmentService.ts` |
 | El votante intenta votar dos veces | 403 `ALREADY_VOTED`; la interfaz muestra "Ya votaste" | `castBallot` |
-| Dos pestañas envían el voto al mismo tiempo | Solo una pasa: el `UPDATE … WHERE has_voted = 0` cambia 1 fila en una sola (probado con 10 simultáneas) | `voting.test.ts` |
+| Dos pestañas envían el voto al mismo tiempo | Solo una pasa: el bloqueo de fila (`FOR UPDATE`) y el `UPDATE … WHERE has_voted = false` hacen que solo una cambie la fila (probado con 10 simultáneas) | `voting.test.ts` |
 | Falta elegir una moción | 400 `INCOMPLETE_BALLOT`; además el botón está deshabilitado | `castBallot`, `VotingView.jsx` |
 | Se envía una opción que no existe o una moción de otra votación | 400 `INVALID_OPTION` / `INVALID_MOTION`; la base de datos además lo impide con una clave foránea compuesta | `castBallot`, `schema.ts` |
 | El enlace expiró (48 h) | 403 `TOKEN_EXPIRED`; el admin puede "Reenviar enlace", que genera uno nuevo e invalida el anterior | `rotateVoterToken` |
 | La votación está cerrada | 403 `ELECTION_CLOSED`; se puede reabrir | `setElectionStatus` |
 | Alguien inventa un token | 404 `INVALID_TOKEN` (se busca por hash; 256 bits no se pueden adivinar) | `votingService.ts` |
-| ¿Se puede saber qué votó cada persona? | No: la tabla `ballots` no tiene referencia al votante, ni fecha, y su id es aleatorio | `schema.ts` |
+| ¿Se puede saber qué votó cada persona? | No: la tabla `ballots` no tiene referencia al votante, ni fecha, y su id es aleatorio. Además los resultados solo se muestran con la votación cerrada y la lista de votantes no muestra la hora del voto (si no, comparando antes/después de cada voto se podría deducir) | `schema.ts`, `getElectionDetail` |
 | ¿Cómo sé que los resultados cuadran? | Por cada moción: suma de pesos de papeletas = suma de pesos de quienes votaron (insignia "Integridad verificada") | `getElectionDetail` |
 | Quien no es responsable intenta responder | 403 `NOT_QUESTION_OWNER` | `answerQuestion` |
 | Delegar una pregunta ya respondida | 409 `QUESTION_ALREADY_ANSWERED` | `delegateQuestions` |
@@ -83,12 +84,19 @@ Archivo de entrada: `server/server.ts` → `createApp()` en `server/app.ts`.
 
 ## 4. Preguntas técnicas probables
 
-**¿Por qué SQLite y no JSON?** Los JSON obligaban a reescribir archivos completos y a usar un candado propio.
-SQLite da transacciones reales (todo o nada), claves foráneas y restricciones, sin instalar nada extra.
+**¿Por qué PostgreSQL y no JSON?** Los JSON obligaban a reescribir archivos completos y a usar un candado propio.
+PostgreSQL da transacciones reales (todo o nada), claves foráneas, restricciones y bloqueos por fila, y Supabase
+lo ofrece gratis para publicar la aplicación (criterio de despliegue de la rúbrica).
 
-**¿Por qué las transacciones son funciones síncronas?** El driver `node:sqlite` es síncrono. Si dentro de una
-transacción no hay `await`, ninguna otra petición puede ejecutarse a la mitad. El trabajo asíncrono (archivos,
-correos) se hace antes o después.
+**¿Cómo se evita el doble voto si llegan dos peticiones a la vez?** Dentro de una transacción se lee el votante con
+`SELECT … FOR UPDATE`: Postgres bloquea esa fila y la segunda petición espera. Cuando la primera confirma, la segunda
+ve `has_voted = true` y además el `UPDATE … WHERE has_voted = false` no cambia ninguna fila → 403 `ALREADY_VOTED`.
+
+**¿Por qué dos drivers (PGlite y postgres.js)?** Para que las pruebas usen exactamente el mismo SQL que producción sin
+instalar un servidor: PGlite es Postgres real en WebAssembly. En producción se usa Supabase con `postgres.js`.
+
+**¿Cómo se protege Supabase?** Las tablas tienen Row Level Security activado sin políticas: la API pública de Supabase
+no puede leerlas. Solo la API del proyecto (dueña de las tablas) accede. La clave `service_role` vive solo en el servidor.
 
 **¿Por qué guardar el hash del token y no el token?** Si alguien copia la base de datos, no obtiene enlaces válidos.
 Para validar, se calcula el hash del token recibido y se busca.
@@ -111,7 +119,7 @@ categoría con más coincidencias; si no hay ninguna, `general`.
 modificarlos, y deja una marca en la tabla `meta` para no repetir. Los tokens se migran como hash: los enlaces
 enviados siguen funcionando.
 
-**¿Cómo se probó?** `deno task test` (35 pruebas que levantan la app real en memoria con `app.handle()`),
+**¿Cómo se probó?** `deno task test` (41 pruebas que levantan la app real con PostgreSQL en memoria y `app.handle()`),
 ESLint, `check:i18n`, build y pruebas en navegador a 390, 820 y 1440 px.
 
 **¿Qué seguridad tiene la carga de archivos?** Lista de extensiones permitidas, revisión del contenido (firma del
