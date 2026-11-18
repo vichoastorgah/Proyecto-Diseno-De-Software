@@ -1,162 +1,106 @@
 /**
  * @module services/emailService
- * Personalized voting-invitation emails.
+ * Personalized emails (voting invitations and survey assignments) in English or Spanish.
  *
- * Delivery modes:
- * 1. `smtp`      - Real delivery through `nodemailer`. Used when BOTH `SMTP_USER` and
- *                  `SMTP_PASS` are defined in the environment (e.g. in `.env`).
- * 2. `simulated` - Fallback used when either credential is missing. Nothing leaves the
- *                  machine: the complete message (recipient, subject, link, attachment
- *                  name) is printed to the console so the flow can still be demonstrated
- *                  offline. The returned result reports `mode: "simulated"`.
+ * Delivery is abstracted behind {@link Mailer}:
+ * - `smtp`      real delivery through nodemailer, used when SMTP_USER and SMTP_PASS are set.
+ * - `simulated` nothing leaves the machine; the message is printed to the server console
+ *               so the whole flow can be demonstrated offline (including the voting link).
+ * Tests inject {@link createCapturingMailer} to inspect the rendered messages.
  *
- * Environment variables:
- * - SMTP_USER, SMTP_PASS     Credentials (both required for real delivery).
- * - SMTP_HOST                Default `smtp.gmail.com`.
- * - SMTP_PORT                Default `587`.
- * - SMTP_SECURE              `true` for implicit TLS. Defaults to `true` only on port 465.
- * - SMTP_FROM                Sender address. Defaults to `SMTP_USER`.
- * - VOTE_BASE_URL            Base URL of the voting page. Default `http://localhost:5173/vote`.
- * - DEFAULT_EMAIL_LANGUAGE   `en` or `es`. Default `en`.
- *
- * Email copy is stored locally (no external translation API).
+ * Environment (SMTP mode): SMTP_USER, SMTP_PASS, SMTP_HOST (default smtp.gmail.com),
+ * SMTP_PORT (587), SMTP_SECURE (true only on port 465 by default), SMTP_FROM (SMTP_USER).
+ * Email copy is stored locally: no external translation API.
  */
-// @deno-types="npm:@types/nodemailer@6.4.17"
-import nodemailer from "npm:nodemailer@6.9.16";
-import { fromFileUrl } from "jsr:@std/path@^1";
+// @deno-types="@types/nodemailer"
+import nodemailer from "nodemailer";
+import { Buffer } from "node:buffer";
+import type { Gender } from "./csvService.ts";
 
-/** Languages supported by the email templates. */
 export type EmailLanguage = "en" | "es";
-
-/** Minimum recipient data needed to personalize a message. */
-export interface EmailRecipient {
-  email: string;
-  name: string;
-  /** Free-text gender used for the salutation (e.g. "male", "female", "other"). */
-  gender?: string;
-  /** ISO timestamp after which the voting link stops working. */
-  tokenExpiresAt?: string;
-}
-
-/** Optional per-message settings. */
-export interface EmailOptions {
-  /** Language of the message. Defaults to `DEFAULT_EMAIL_LANGUAGE` or `en`. */
-  language?: EmailLanguage;
-  /** Title of the motion, shown in the subject and body. */
-  motionTitle?: string;
-  /** Name shown for the attachment (defaults to the file name on disk). */
-  attachmentName?: string;
-}
-
-/** How a message was handled. */
 export type DeliveryMode = "smtp" | "simulated";
 
-/** Outcome of one send operation. */
-export interface EmailDeliveryResult {
-  mode: DeliveryMode;
-  recipient: string;
-  /** Provider message id (only for `smtp`). */
-  messageId?: string;
+export interface OutgoingEmail {
+  to: string;
+  subject: string;
+  text: string;
+  html: string;
+  /** Attachment bytes are loaded from the file store (works without a local disk). */
+  attachments: { filename: string; content: Uint8Array }[];
 }
 
-/** Localized copy of one language. */
-interface EmailTemplate {
-  subject: (motionTitle?: string) => string;
-  salutation: Record<"male" | "female" | "neutral", (name: string) => string>;
-  intro: (motionTitle?: string) => string;
-  instruction: string;
-  expiry: (date: string) => string;
-  attachmentNote: string;
-  ignoreNote: string;
-  locale: string;
+export interface Mailer {
+  readonly mode: DeliveryMode;
+  send(email: OutgoingEmail): Promise<void>;
 }
 
-const TEMPLATES: Record<EmailLanguage, EmailTemplate> = {
-  en: {
-    subject: (title) => (title ? `Your voting link: ${title}` : "Your personal voting link"),
-    salutation: {
-      male: (name) => `Dear Mr. ${name}`,
-      female: (name) => `Dear Ms. ${name}`,
-      neutral: (name) => `Dear ${name}`,
-    },
-    intro: (title) =>
-      title ? `You have been invited to vote on: "${title}".` : "You have been invited to vote.",
-    instruction: "Use your personal, single-use link:",
-    expiry: (date) => `This link is valid until ${date}.`,
-    attachmentNote: "Supporting documents are attached to this message.",
-    ignoreNote: "Do not share this link: it identifies you as a voter.",
-    locale: "en-US",
-  },
-  es: {
-    subject: (title) => (title ? `Tu enlace de votación: ${title}` : "Tu enlace personal de votación"),
-    salutation: {
-      male: (name) => `Estimado Sr. ${name}`,
-      female: (name) => `Estimada Sra. ${name}`,
-      neutral: (name) => `Estimado/a ${name}`,
-    },
-    intro: (title) =>
-      title ? `Has sido invitado/a a votar en: "${title}".` : "Has sido invitado/a a votar.",
-    instruction: "Usa tu enlace personal de un solo uso:",
-    expiry: (date) => `Este enlace es válido hasta el ${date}.`,
-    attachmentNote: "Los documentos de respaldo van adjuntos a este mensaje.",
-    ignoreNote: "No compartas este enlace: te identifica como votante.",
-    locale: "es-CL",
-  },
-};
+// ---------- Mailers ----------
 
-/** Cached SMTP transporter (created lazily on first real send). */
-let cachedTransporter: nodemailer.Transporter | null = null;
-
-/** True when both SMTP credentials are present in the environment. */
-export function isSmtpConfigured(): boolean {
-  const user = Deno.env.get("SMTP_USER");
-  const pass = Deno.env.get("SMTP_PASS");
-  return Boolean(user && pass);
-}
-
-/** Builds (once) the nodemailer transporter from environment variables. */
-function getTransporter(): nodemailer.Transporter {
-  if (cachedTransporter) return cachedTransporter;
-
-  const port = Number(Deno.env.get("SMTP_PORT") ?? 587);
-  const secureFlag = Deno.env.get("SMTP_SECURE");
-  const secure = secureFlag === undefined ? port === 465 : secureFlag.toLowerCase() === "true";
-
-  cachedTransporter = nodemailer.createTransport({
-    host: Deno.env.get("SMTP_HOST") ?? "smtp.gmail.com",
+/** Real SMTP delivery. */
+function createSmtpMailer(env: Record<string, string | undefined>): Mailer {
+  const port = Number(env.SMTP_PORT ?? 587);
+  const secure = env.SMTP_SECURE === undefined ? port === 465 : env.SMTP_SECURE.toLowerCase() === "true";
+  const transporter = nodemailer.createTransport({
+    host: env.SMTP_HOST ?? "smtp.gmail.com",
     port,
     secure,
-    auth: {
-      user: Deno.env.get("SMTP_USER") as string,
-      pass: Deno.env.get("SMTP_PASS") as string,
-    },
+    auth: { user: env.SMTP_USER as string, pass: env.SMTP_PASS as string },
   });
-  return cachedTransporter;
+  const from = env.SMTP_FROM ?? env.SMTP_USER;
+  return {
+    mode: "smtp",
+    async send(email) {
+      await transporter.sendMail({
+        from,
+        ...email,
+        attachments: email.attachments.map((file) => ({ filename: file.filename, content: Buffer.from(file.content) })),
+      });
+    },
+  };
 }
 
-/** Resolves the message language from options and environment. */
-function resolveLanguage(options?: EmailOptions): EmailLanguage {
-  if (options?.language === "en" || options?.language === "es") return options.language;
-  return Deno.env.get("DEFAULT_EMAIL_LANGUAGE") === "es" ? "es" : "en";
+/** Prints the message to the console instead of sending it. */
+function createConsoleMailer(): Mailer {
+  return {
+    mode: "simulated",
+    send(email) {
+      console.log(
+        [
+          "---------- [SIMULATED EMAIL: SMTP_USER / SMTP_PASS not set] ----------",
+          `To: ${email.to}`,
+          `Subject: ${email.subject}`,
+          `Attachments: ${email.attachments.map((a) => a.filename).join(", ") || "none"}`,
+          "",
+          email.text,
+          "----------------------------------------------------------------------",
+        ].join("\n"),
+      );
+      return Promise.resolve();
+    },
+  };
 }
 
-/** Maps free-text gender to a salutation bucket. */
-function genderBucket(gender: string | undefined): "male" | "female" | "neutral" {
-  switch ((gender ?? "").trim().toLowerCase()) {
-    case "male":
-    case "m":
-    case "masculino":
-      return "male";
-    case "female":
-    case "f":
-    case "femenino":
-      return "female";
-    default:
-      return "neutral";
-  }
+/** Picks SMTP when both credentials are configured, the console simulation otherwise. */
+export function createMailer(env: Record<string, string | undefined> = Deno.env.toObject()): Mailer {
+  return env.SMTP_USER && env.SMTP_PASS ? createSmtpMailer(env) : createConsoleMailer();
 }
 
-/** Escapes text for safe insertion into the HTML body. */
+/** Test double: keeps every message in memory. `failFor` simulates rejected recipients. */
+export function createCapturingMailer(failFor: readonly string[] = []): Mailer & { sent: OutgoingEmail[] } {
+  const sent: OutgoingEmail[] = [];
+  return {
+    mode: "simulated",
+    sent,
+    send(email) {
+      if (failFor.includes(email.to)) return Promise.reject(new Error("Rejected by test mailer."));
+      sent.push(email);
+      return Promise.resolve();
+    },
+  };
+}
+
+// ---------- Templates ----------
+
 function escapeHtml(value: string): string {
   return value
     .replaceAll("&", "&amp;")
@@ -166,131 +110,142 @@ function escapeHtml(value: string): string {
     .replaceAll("'", "&#39;");
 }
 
-/** Builds the personalized salutation from the recipient's gender and name. */
-export function buildGreeting(recipient: EmailRecipient, language: EmailLanguage): string {
-  return TEMPLATES[language].salutation[genderBucket(recipient.gender)](recipient.name);
+const LOCALES: Record<EmailLanguage, string> = { en: "en-US", es: "es-CL" };
+
+/** Gender-aware salutation (the CSV gender personalizes the message). */
+export function buildGreeting(name: string, gender: Gender | string, language: EmailLanguage): string {
+  if (language === "es") {
+    if (gender === "male") return `Estimado Sr. ${name}`;
+    if (gender === "female") return `Estimada Sra. ${name}`;
+    return `Estimado/a ${name}`;
+  }
+  if (gender === "male") return `Dear Mr. ${name}`;
+  if (gender === "female") return `Dear Ms. ${name}`;
+  return `Dear ${name}`;
 }
 
-/** Builds the voting URL that carries the single-use token. */
-export function buildVotingLink(token: string): string {
-  const baseUrl = Deno.env.get("VOTE_BASE_URL") ?? "http://localhost:5173/vote";
-  return `${baseUrl}?token=${encodeURIComponent(token)}`;
-}
-
-/** Plain-text and HTML bodies plus subject for one recipient. */
-interface RenderedEmail {
+export interface RenderedEmail {
   subject: string;
   text: string;
   html: string;
 }
 
-/** Renders the localized message. Pure function. */
-function renderEmail(
-  recipient: EmailRecipient,
-  token: string,
-  hasAttachment: boolean,
-  language: EmailLanguage,
-  motionTitle?: string,
-): RenderedEmail {
-  const template = TEMPLATES[language];
-  const greeting = buildGreeting(recipient, language);
-  const link = buildVotingLink(token);
-  const expiryLine = recipient.tokenExpiresAt
-    ? template.expiry(new Date(recipient.tokenExpiresAt).toLocaleString(template.locale))
+/** Wraps paragraphs in a minimal, client-safe HTML layout. */
+function htmlLayout(paragraphs: string[], link: { href: string; label: string }, footer: string): string {
+  return [
+    '<div style="font-family:Arial,Helvetica,sans-serif;font-size:15px;color:#1f2937;max-width:560px">',
+    ...paragraphs,
+    `<p style="margin:24px 0"><a href="${escapeHtml(link.href)}" style="background:#1d4ed8;color:#ffffff;` +
+    `padding:12px 20px;border-radius:6px;text-decoration:none;display:inline-block">${escapeHtml(link.label)}</a></p>`,
+    `<p style="font-size:13px;color:#4b5563">${escapeHtml(link.href)}</p>`,
+    `<p style="font-size:12px;color:#6b7280">${escapeHtml(footer)}</p>`,
+    "</div>",
+  ].join("\n");
+}
+
+export interface InvitationContent {
+  name: string;
+  gender: Gender | string;
+  language: EmailLanguage;
+  electionTitle: string;
+  motionTitles: string[];
+  link: string;
+  /** ISO timestamp, or null when the link never expires. */
+  expiresAt: string | null;
+  attachmentCount: number;
+}
+
+/** Renders a voting invitation. Pure function. */
+export function renderInvitation(content: InvitationContent): RenderedEmail {
+  const es = content.language === "es";
+  const greeting = buildGreeting(content.name, content.gender, content.language);
+  const expiry = content.expiresAt
+    ? new Date(content.expiresAt).toLocaleString(LOCALES[content.language], { timeZone: "America/Santiago" })
     : null;
 
-  const textLines = [
+  const subject = es ? `Tu enlace de votación: ${content.electionTitle}` : `Your voting link: ${content.electionTitle}`;
+  const intro = es
+    ? `Te invitamos a participar en la votación "${content.electionTitle}".`
+    : `You are invited to take part in the vote "${content.electionTitle}".`;
+  const motionsHeading = es
+    ? (content.motionTitles.length === 1 ? "Moción a votar:" : `Mociones a votar (${content.motionTitles.length}):`)
+    : (content.motionTitles.length === 1 ? "Motion on the ballot:" : `Motions on the ballot (${content.motionTitles.length}):`);
+  const instruction = es
+    ? "Usa tu enlace personal. Solo puedes votar una vez y tu voto es secreto."
+    : "Use your personal link. You can vote only once and your vote is secret.";
+  const expiryLine = expiry ? (es ? `El enlace es válido hasta: ${expiry}` : `The link is valid until: ${expiry}`) : null;
+  const attachmentLine = content.attachmentCount > 0
+    ? (es ? "Los documentos de respaldo van adjuntos a este correo." : "Supporting documents are attached to this email.")
+    : null;
+  const footer = es
+    ? "No compartas este enlace: te identifica como votante. Si no esperabas este correo, ignóralo."
+    : "Do not share this link: it identifies you as a voter. If you did not expect this email, ignore it.";
+  const button = es ? "Ir a votar" : "Go to the ballot";
+
+  const text = [
     `${greeting},`,
     "",
-    template.intro(motionTitle),
-    template.instruction,
-    link,
-    ...(expiryLine ? ["", expiryLine] : []),
-    ...(hasAttachment ? ["", template.attachmentNote] : []),
+    intro,
     "",
-    template.ignoreNote,
-  ];
+    motionsHeading,
+    ...content.motionTitles.map((title, index) => `  ${index + 1}. ${title}`),
+    "",
+    instruction,
+    content.link,
+    ...(expiryLine ? ["", expiryLine] : []),
+    ...(attachmentLine ? ["", attachmentLine] : []),
+    "",
+    footer,
+  ].join("\n");
 
-  const htmlParts = [
-    `<p>${escapeHtml(greeting)},</p>`,
-    `<p>${escapeHtml(template.intro(motionTitle))}</p>`,
-    `<p>${escapeHtml(template.instruction)}<br><a href="${escapeHtml(link)}">${escapeHtml(link)}</a></p>`,
-    ...(expiryLine ? [`<p>${escapeHtml(expiryLine)}</p>`] : []),
-    ...(hasAttachment ? [`<p>${escapeHtml(template.attachmentNote)}</p>`] : []),
-    `<p><small>${escapeHtml(template.ignoreNote)}</small></p>`,
-  ];
+  const html = htmlLayout(
+    [
+      `<p>${escapeHtml(greeting)},</p>`,
+      `<p>${escapeHtml(intro)}</p>`,
+      `<p>${escapeHtml(motionsHeading)}</p>`,
+      `<ol>${content.motionTitles.map((title) => `<li>${escapeHtml(title)}</li>`).join("")}</ol>`,
+      `<p>${escapeHtml(instruction)}</p>`,
+      ...(expiryLine ? [`<p>${escapeHtml(expiryLine)}</p>`] : []),
+      ...(attachmentLine ? [`<p>${escapeHtml(attachmentLine)}</p>`] : []),
+    ],
+    { href: content.link, label: button },
+    footer,
+  );
+
+  return { subject, text, html };
+}
+
+export interface SurveyNoticeContent {
+  language: EmailLanguage;
+  surveyTitle: string;
+  questionCount: number;
+  link: string;
+  /** `initial`: the survey was addressed to the recipient; `delegated`: questions were handed over. */
+  kind: "initial" | "delegated";
+  fromEmail?: string;
+}
+
+/** Renders the notice sent to a survey recipient or to a new question owner. Pure function. */
+export function renderSurveyNotice(content: SurveyNoticeContent): RenderedEmail {
+  const es = content.language === "es";
+  const n = content.questionCount;
+  const subject = es ? `Cuestionario asignado: ${content.surveyTitle}` : `Survey assigned to you: ${content.surveyTitle}`;
+  const body = content.kind === "initial"
+    ? (es
+      ? `Se te asignó el cuestionario "${content.surveyTitle}" (${n} preguntas). Puedes responderlas o delegarlas a otras personas de tu organización.`
+      : `The survey "${content.surveyTitle}" (${n} questions) has been assigned to you. You can answer the questions or delegate them to colleagues.`)
+    : (es
+      ? `${content.fromEmail ?? "Una persona"} te delegó ${n} ${n === 1 ? "pregunta" : "preguntas"} del cuestionario "${content.surveyTitle}". Ahora eres responsable de responderlas.`
+      : `${content.fromEmail ?? "Someone"} delegated ${n} ${n === 1 ? "question" : "questions"} of the survey "${content.surveyTitle}" to you. You are now responsible for answering them.`);
+  const signIn = es
+    ? "Inicia sesión con tu cuenta de Google corporativa para continuar."
+    : "Sign in with your Google account to continue.";
+  const footer = es ? "Mensaje automático del Sistema de Votación y Cuestionarios." : "Automatic message from the Voting & Survey System.";
+  const button = es ? "Abrir cuestionario" : "Open survey";
 
   return {
-    subject: template.subject(motionTitle),
-    text: textLines.join("\n"),
-    html: htmlParts.join("\n"),
+    subject,
+    text: [body, "", signIn, content.link, "", footer].join("\n"),
+    html: htmlLayout([`<p>${escapeHtml(body)}</p>`, `<p>${escapeHtml(signIn)}</p>`], { href: content.link, label: button }, footer),
   };
-}
-
-/** Normalizes an attachment location (path or file URL) to a file-system path. */
-function toFilePath(attachment: string | URL): string {
-  return attachment instanceof URL ? fromFileUrl(attachment) : attachment;
-}
-
-/** Returns the last path segment (works with both `/` and `\` separators). */
-function fileNameOf(path: string): string {
-  return path.split(/[\\/]/).pop() ?? path;
-}
-
-/**
- * Sends one personalized voting invitation.
- *
- * With SMTP credentials configured the message is delivered through nodemailer;
- * otherwise it is printed to the console (see the module documentation).
- *
- * @param voter Recipient data (email, name, gender, token expiry).
- * @param token Single-use token embedded in the voting link.
- * @param attachmentPath Optional file to attach (absolute path or `file:` URL).
- * @param options Optional language and motion title.
- * @returns How the message was handled.
- * @throws If the attachment cannot be read or the SMTP server rejects the message.
- */
-export async function sendRealPersonalizedEmail(
-  voter: EmailRecipient,
-  token: string,
-  attachmentPath?: string | URL,
-  options?: EmailOptions,
-): Promise<EmailDeliveryResult> {
-  const language = resolveLanguage(options);
-  const filePath = attachmentPath ? toFilePath(attachmentPath) : undefined;
-
-  if (filePath) {
-    // Fail early (and clearly) if the file is missing, in both modes.
-    await Deno.stat(filePath);
-  }
-
-  const message = renderEmail(voter, token, Boolean(filePath), language, options?.motionTitle);
-
-  if (!isSmtpConfigured()) {
-    console.log(
-      [
-        "---------- [SIMULATED EMAIL: SMTP_USER / SMTP_PASS not set] ----------",
-        `To: ${voter.email}`,
-        `Subject: ${message.subject}`,
-        `Attachment: ${filePath ? (options?.attachmentName ?? fileNameOf(filePath)) : "none"}`,
-        "",
-        message.text,
-        "----------------------------------------------------------------------",
-      ].join("\n"),
-    );
-    return { mode: "simulated", recipient: voter.email };
-  }
-
-  const info = await getTransporter().sendMail({
-    from: Deno.env.get("SMTP_FROM") ?? Deno.env.get("SMTP_USER"),
-    to: voter.email,
-    subject: message.subject,
-    text: message.text,
-    html: message.html,
-    attachments: filePath
-      ? [{ filename: options?.attachmentName ?? fileNameOf(filePath), path: filePath }]
-      : [],
-  });
-
-  return { mode: "smtp", recipient: voter.email, messageId: info.messageId };
 }

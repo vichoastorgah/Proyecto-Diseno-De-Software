@@ -1,267 +1,279 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { useLanguage } from "../context/LanguageContext";
-import { API_BASE_URL } from "../config";
+import { ApiError, apiRequest, apiUrl } from "../api/client";
+import { useLanguage } from "../context/useLanguage";
+import { useResource } from "../hooks/useResource";
+import { ErrorNotice, LoadingState, Notice } from "../components/ui/Feedback";
+import { ConfirmDialog } from "../components/ui/Modal";
+import { ProgressBar } from "../components/ui/Layout";
+import Icon from "../components/ui/Icon";
+import { formatBytes, formatDateTime, optionLabel } from "../utils/format";
 
-const CONTEXT_URL = `${API_BASE_URL}/api/vote/context`;
-const VOTE_URL = `${API_BASE_URL}/api/vote`;
-
-/** Maps backend error codes to translation keys. */
-const ERROR_KEY_BY_CODE = {
-  INVALID_TOKEN: "voting.errors.invalidToken",
-  TOKEN_EXPIRED: "voting.errors.expired",
-  ALREADY_VOTED: "voting.errors.alreadyVoted",
-  MOTION_NOT_FOUND: "voting.errors.motionNotFound",
-  INVALID_OPTION: "voting.errors.invalidOption",
+/** Reasons that make the ballot unusable, mapped to their explanation. */
+const BLOCKED_REASONS = {
+  INVALID_TOKEN: { icon: "alert", title: "voting.blocked.invalidTitle", text: "voting.blocked.invalidText" },
+  ALREADY_VOTED: { icon: "check", title: "voting.blocked.votedTitle", text: "voting.blocked.votedText" },
+  TOKEN_EXPIRED: { icon: "clock", title: "voting.blocked.expiredTitle", text: "voting.blocked.expiredText" },
+  ELECTION_CLOSED: { icon: "lock", title: "voting.blocked.closedTitle", text: "voting.blocked.closedText" },
 };
 
-/** Errors after which voting is no longer possible with this link. */
-const BLOCKING_CODES = new Set([
-  "INVALID_TOKEN",
-  "TOKEN_EXPIRED",
-  "ALREADY_VOTED",
-  "MOTION_NOT_FOUND",
-]);
-
-/** Reads a JSON body without throwing on empty or invalid payloads. */
-async function readJson(response) {
-  try {
-    return await response.json();
-  } catch {
-    return null;
-  }
-}
-
-/** Picks the translation key for a failed response (code first, HTTP status as fallback). */
-function errorKeyFor(code, status) {
-  if (code && ERROR_KEY_BY_CODE[code]) {
-    return ERROR_KEY_BY_CODE[code];
-  }
-  return status === 404 ? ERROR_KEY_BY_CODE.INVALID_TOKEN : "voting.errors.unexpected";
-}
-
-/** Bootstrap button style for an option; unknown options get a neutral style. */
-function buttonClassFor(option) {
-  switch (option.toLowerCase()) {
-    case "approve":
-      return "btn-success";
-    case "reject":
-      return "btn-danger";
-    default:
-      return "btn-outline-primary";
-  }
-}
-
-function VotingView() {
-  const { t, language } = useLanguage();
-  const [searchParams] = useSearchParams();
-  const token = searchParams.get("token");
-
-  // loading | ready | voted | blocked | loadFailed
-  const [status, setStatus] = useState(token ? "loading" : "blocked");
-  const [votingContext, setVotingContext] = useState(null);
-  // Stores a translation KEY (not the final text) so the message
-  // re-renders correctly if the user switches language afterwards.
-  const [errorKey, setErrorKey] = useState(token ? null : "voting.errors.invalidToken");
-  const [submittingOption, setSubmittingOption] = useState(null);
-  const [reloadCounter, setReloadCounter] = useState(0);
-
-  // Load the motion and voter status behind the link.
-  useEffect(() => {
-    if (!token) {
-      return undefined;
-    }
-
-    const controller = new AbortController();
-
-    async function loadContext() {
-      try {
-        const response = await fetch(`${CONTEXT_URL}?token=${encodeURIComponent(token)}`, {
-          signal: controller.signal,
-        });
-        const payload = await readJson(response);
-
-        if (!response.ok || !payload?.motion) {
-          setErrorKey(errorKeyFor(payload?.code, response.status));
-          setStatus("blocked");
-          return;
-        }
-
-        setVotingContext(payload);
-        if (payload.voter.hasVoted) {
-          setErrorKey("voting.errors.alreadyVoted");
-          setStatus("blocked");
-        } else if (payload.voter.isExpired) {
-          setErrorKey("voting.errors.expired");
-          setStatus("blocked");
-        } else {
-          setErrorKey(null);
-          setStatus("ready");
-        }
-      } catch (error) {
-        if (error.name === "AbortError") {
-          return;
-        }
-        setErrorKey("voting.errors.network");
-        setStatus("loadFailed");
-      }
-    }
-
-    loadContext();
-    return () => controller.abort();
-  }, [token, reloadCounter]);
-
-  const handleRetry = useCallback(() => {
-    setStatus("loading");
-    setErrorKey(null);
-    setReloadCounter((count) => count + 1);
-  }, []);
-
-  const handleVote = async (option) => {
-    if (status !== "ready" || submittingOption !== null || !votingContext) {
-      return;
-    }
-
-    setSubmittingOption(option);
-    setErrorKey(null);
-
-    try {
-      const response = await fetch(VOTE_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          token,
-          motionId: votingContext.motion.id,
-          choice: option,
-        }),
-      });
-
-      if (response.ok) {
-        setStatus("voted");
-        return;
-      }
-
-      const payload = await readJson(response);
-      setErrorKey(errorKeyFor(payload?.code, response.status));
-      if (BLOCKING_CODES.has(payload?.code)) {
-        setStatus("blocked");
-      }
-    } catch {
-      setErrorKey("voting.errors.network");
-    } finally {
-      setSubmittingOption(null);
-    }
-  };
-
-  /** Translates a known option (approve/reject/abstain); custom options are shown as typed. */
-  const optionLabel = (option) => {
-    const key = `voting.options.${option.toLowerCase().replace(/[^a-z0-9]+/g, "_")}`;
-    const translated = t(key);
-    return translated === key ? option : translated;
-  };
-
-  const motion = votingContext?.motion ?? null;
-  const voter = votingContext?.voter ?? null;
-  const expiryDate = voter?.tokenExpiresAt
-    ? new Date(voter.tokenExpiresAt).toLocaleString(language)
-    : null;
-  const isSubmitting = submittingOption !== null;
-
+function BlockedState({ reason }) {
+  const { t } = useLanguage();
+  const info = BLOCKED_REASONS[reason] ?? BLOCKED_REASONS.INVALID_TOKEN;
   return (
-    <div className="container py-4 py-md-5">
-      <div className="row justify-content-center">
-        <div className="col-12 col-md-8 col-lg-6">
-          <div className="card shadow-sm">
-            <div className="card-header text-center">
-              <h2 className="h5 mb-0">{t("voting.ballotTitle")}</h2>
-            </div>
-
-            <div className="card-body p-4">
-              {status === "loading" && (
-                <div className="text-center text-muted" role="status">
-                  <span
-                    className="spinner-border spinner-border-sm me-2"
-                    aria-hidden="true"
-                  ></span>
-                  {t("voting.loading")}
-                </div>
-              )}
-
-              {motion && (
-                <div className="text-center mb-4">
-                  {voter?.name && <p className="text-muted mb-2">{t("voting.greeting", { name: voter.name })}</p>}
-                  <h1 className="h4 mb-3">{motion.title}</h1>
-                  {motion.description && (
-                    <p className="text-start mb-0" style={{ whiteSpace: "pre-line" }}>
-                      {motion.description}
-                    </p>
-                  )}
-                </div>
-              )}
-
-              {status === "voted" && (
-                <div className="alert alert-success text-center" role="alert">
-                  {t("voting.success")}
-                </div>
-              )}
-
-              {errorKey && (
-                <div
-                  className={`alert ${status === "blocked" ? "alert-warning" : "alert-danger"} text-center`}
-                  role="alert"
-                >
-                  {t(errorKey)}
-                </div>
-              )}
-
-              {status === "loadFailed" && (
-                <div className="text-center">
-                  <button type="button" className="btn btn-primary" onClick={handleRetry}>
-                    {t("voting.retry")}
-                  </button>
-                </div>
-              )}
-
-              {status === "ready" && motion && (
-                <>
-                  <p className="small text-muted text-center">{t("voting.chooseOption")}</p>
-                  <div className="d-grid gap-3 col-12 col-sm-10 mx-auto">
-                    {motion.options.map((option) => (
-                      <button
-                        key={option}
-                        type="button"
-                        className={`btn btn-lg ${buttonClassFor(option)}`}
-                        onClick={() => handleVote(option)}
-                        disabled={isSubmitting}
-                      >
-                        {submittingOption === option ? (
-                          <>
-                            <span
-                              className="spinner-border spinner-border-sm me-2"
-                              role="status"
-                              aria-hidden="true"
-                            ></span>
-                            {t("voting.sending")}
-                          </>
-                        ) : (
-                          optionLabel(option)
-                        )}
-                      </button>
-                    ))}
-                  </div>
-                  {expiryDate && (
-                    <p className="small text-muted text-center mt-3 mb-0">
-                      {t("voting.validUntil", { date: expiryDate })}
-                    </p>
-                  )}
-                </>
-              )}
-            </div>
-          </div>
-        </div>
+    <div className="text-center py-4">
+      <div className="empty-state-icon mx-auto mb-3">
+        <Icon name={info.icon} size={26} />
       </div>
+      <h2 className="h5">{t(info.title)}</h2>
+      <p className="text-body-secondary mb-0 mx-auto" style={{ maxWidth: "32rem" }}>
+        {t(info.text)}
+      </p>
     </div>
   );
 }
 
-export default VotingView;
+function MotionCard({ motion, index, total, selected, onSelect, disabled }) {
+  const { t } = useLanguage();
+  const groupName = `motion-${motion.id}`;
+  return (
+    <fieldset className="card app-card mb-3" disabled={disabled}>
+      <div className="card-body">
+        <legend className="d-flex align-items-start gap-2 mb-2 fs-6 float-none w-auto">
+          <span className="motion-number">{index + 1}</span>
+          <span className="min-w-0">
+            <span className="d-block small text-body-secondary">{t("voting.motionOf", { index: index + 1, total })}</span>
+            <span className="d-block fw-semibold fs-5 text-break-all">{motion.title}</span>
+          </span>
+        </legend>
+        {motion.description && (
+          <p className="text-body-secondary mb-3" style={{ whiteSpace: "pre-line" }}>
+            {motion.description}
+          </p>
+        )}
+        <div className="d-grid gap-2" role="radiogroup" aria-label={motion.title}>
+          {motion.options.map((option) => {
+            const isSelected = selected === option;
+            return (
+              <label key={option} className={`ballot-option ${isSelected ? "selected" : ""}`}>
+                <input
+                  type="radio"
+                  className="form-check-input"
+                  name={groupName}
+                  value={option}
+                  checked={isSelected}
+                  onChange={() => onSelect(motion.id, option)}
+                />
+                <span className="fw-medium text-break-all">{optionLabel(t, option)}</span>
+                {isSelected && <Icon name="check" className="ms-auto text-primary" />}
+              </label>
+            );
+          })}
+        </div>
+      </div>
+    </fieldset>
+  );
+}
+
+export default function VotingView() {
+  const { t, locale } = useLanguage();
+  const [searchParams] = useSearchParams();
+  const token = searchParams.get("token") ?? "";
+
+  const fetchBallot = useCallback(
+    (signal) => {
+      if (!token) return Promise.reject(new ApiError(404, "INVALID_TOKEN", ""));
+      return apiRequest(`/api/vote/context?token=${encodeURIComponent(token)}`, { signal });
+    },
+    [token]
+  );
+  const { data: ballot, error: loadError, loading, reload } = useResource(fetchBallot);
+
+  const [choices, setChoices] = useState({});
+  const [confirming, setConfirming] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState(null);
+  const [blockedAfterSubmit, setBlockedAfterSubmit] = useState(null);
+  const [done, setDone] = useState(false);
+
+  const motions = useMemo(() => ballot?.motions ?? [], [ballot]);
+  const answered = motions.filter((motion) => choices[motion.id] !== undefined).length;
+  const complete = motions.length > 0 && answered === motions.length;
+
+  const blockedReason = useMemo(() => {
+    if (blockedAfterSubmit) return blockedAfterSubmit;
+    if (loadError instanceof ApiError && (loadError.status === 404 || loadError.status === 400)) return "INVALID_TOKEN";
+    if (!ballot) return null;
+    if (ballot.voter.hasVoted) return "ALREADY_VOTED";
+    if (ballot.voter.isExpired) return "TOKEN_EXPIRED";
+    if (ballot.election.status !== "open") return "ELECTION_CLOSED";
+    return null;
+  }, [ballot, loadError, blockedAfterSubmit]);
+
+  const selectOption = (motionId, option) => {
+    setSubmitError(null);
+    setChoices((current) => ({ ...current, [motionId]: option }));
+  };
+
+  const submit = async () => {
+    setSubmitting(true);
+    setSubmitError(null);
+    try {
+      await apiRequest("/api/vote", { method: "POST", json: { token, choices } });
+      setDone(true);
+      setConfirming(false);
+    } catch (error) {
+      setConfirming(false);
+      if (error instanceof ApiError && BLOCKED_REASONS[error.code]) setBlockedAfterSubmit(error.code);
+      else setSubmitError(error);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const title = ballot?.election.title ?? t("voting.title");
+
+  return (
+    <div className="row justify-content-center">
+      <div className="col-12 col-lg-9 col-xl-8">
+        <header className="mb-4">
+          <div className="d-flex align-items-center gap-2 text-body-secondary small mb-2">
+            <Icon name="lock" size={16} />
+            {t("voting.secureBallot")}
+          </div>
+          <h1 className="page-title" tabIndex={-1}>
+            {title}
+          </h1>
+          {ballot?.voter.name && !done && !blockedReason && (
+            <p className="text-body-secondary mb-0">{t("voting.greeting", { name: ballot.voter.name })}</p>
+          )}
+        </header>
+
+        {loading && !ballot && <LoadingState label={t("voting.loading")} />}
+
+        {!loading && loadError && !blockedReason && (
+          <ErrorNotice error={loadError} onRetry={reload} />
+        )}
+
+        {blockedReason && !done && (
+          <div className="card app-card">
+            <div className="card-body">
+              <BlockedState reason={blockedReason} />
+            </div>
+          </div>
+        )}
+
+        {done && (
+          <div className="card app-card">
+            <div className="card-body text-center py-5">
+              <div className="empty-state-icon mx-auto mb-3" style={{ background: "var(--app-success-soft)", color: "#15803d" }}>
+                <Icon name="check" size={28} />
+              </div>
+              <h2 className="h4">{t("voting.successTitle")}</h2>
+              <p className="text-body-secondary mb-0">{t("voting.successText", { count: motions.length })}</p>
+            </div>
+          </div>
+        )}
+
+        {ballot && !blockedReason && !done && (
+          <>
+            {ballot.election.description && (
+              <div className="card app-card mb-3">
+                <div className="card-body">
+                  <p className="mb-0" style={{ whiteSpace: "pre-line" }}>
+                    {ballot.election.description}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {ballot.attachments.length > 0 && (
+              <div className="card app-card mb-3">
+                <div className="card-body">
+                  <h2 className="h6 mb-2">{t("voting.documents")}</h2>
+                  <ul className="list-unstyled mb-0 d-grid gap-2">
+                    {ballot.attachments.map((file) => (
+                      <li key={file.id}>
+                        <a
+                          className="d-inline-flex align-items-center gap-2 text-break-all"
+                          href={apiUrl(`/api/vote/attachments/${file.id}?token=${encodeURIComponent(token)}`)}
+                          rel="noopener noreferrer"
+                        >
+                          <Icon name="download" size={16} />
+                          {file.name}
+                          <span className="text-body-secondary small">({formatBytes(file.size, locale)})</span>
+                        </a>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            )}
+
+            <Notice variant="info">{t("voting.instructions", { count: motions.length })}</Notice>
+
+            {motions.map((motion, index) => (
+              <MotionCard
+                key={motion.id}
+                motion={motion}
+                index={index}
+                total={motions.length}
+                selected={choices[motion.id]}
+                onSelect={selectOption}
+                disabled={submitting}
+              />
+            ))}
+
+            <ErrorNotice error={submitError} onDismiss={() => setSubmitError(null)} />
+
+            <div className="card app-card sticky-toolbar">
+              {/* Single compact row on every width so the bar never hides much of the ballot. */}
+              <div className="card-body d-flex align-items-center gap-3 py-2 py-sm-3">
+                <div className="flex-grow-1 min-w-0">
+                  <div className="small text-body-secondary mb-1 text-truncate" aria-live="polite">
+                    {t("voting.progress", { answered, total: motions.length })}
+                  </div>
+                  <ProgressBar value={motions.length ? (answered / motions.length) * 100 : 0} label={t("voting.progressLabel")} />
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-primary btn-lg-sm text-nowrap flex-shrink-0"
+                  disabled={!complete || submitting}
+                  onClick={() => setConfirming(true)}
+                >
+                  {t("voting.review")}
+                  <Icon name="arrowRight" className="ms-2" />
+                </button>
+              </div>
+            </div>
+
+            {ballot.voter.tokenExpiresAt && (
+              <p className="small text-body-secondary text-center mt-3 mb-0">
+                {t("voting.validUntil", { date: formatDateTime(ballot.voter.tokenExpiresAt, locale) })}
+              </p>
+            )}
+
+            <ConfirmDialog
+              open={confirming}
+              title={t("voting.confirmTitle")}
+              confirmLabel={t("voting.confirm")}
+              busy={submitting}
+              onCancel={() => setConfirming(false)}
+              onConfirm={submit}
+            >
+              <p>{t("voting.confirmText")}</p>
+              <ol className="mb-0 ps-3">
+                {motions.map((motion) => (
+                  <li key={motion.id} className="mb-2">
+                    <div className="small text-body-secondary text-break-all">{motion.title}</div>
+                    <div className="fw-semibold">{optionLabel(t, choices[motion.id])}</div>
+                  </li>
+                ))}
+              </ol>
+            </ConfirmDialog>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
