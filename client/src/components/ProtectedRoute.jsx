@@ -1,20 +1,29 @@
-import { Navigate } from "react-router-dom";
-import { useAuth } from "../context/AuthContext";
+import { Navigate, Outlet, useLocation } from "react-router-dom";
+import { useAuth } from "../context/useAuth";
+import { useLanguage } from "../context/useLanguage";
+import { EmptyState } from "./ui/Feedback";
 
 /**
- * Guards a route behind authentication.
- * Redirects to /login when there is no authenticated user.
- *
- * @param {{ children: import("react").ReactNode }} props
+ * Guards nested routes. Without a session it redirects to /login (remembering the target);
+ * with `requireAdmin`, non-admins see a "no access" message. The server enforces the same
+ * rules on every endpoint: this guard only improves the experience.
  */
-function ProtectedRoute({ children }) {
-  const { user } = useAuth();
+export default function ProtectedRoute({ requireAdmin = false }) {
+  const { user, isAdmin } = useAuth();
+  const { t } = useLanguage();
+  const location = useLocation();
 
   if (!user) {
-    return <Navigate replace to="/login" />;
+    return <Navigate replace to="/login" state={{ from: `${location.pathname}${location.search}` }} />;
   }
-
-  return children;
+  if (requireAdmin && !isAdmin) {
+    return (
+      <div className="card app-card">
+        <EmptyState icon="lock" title={t("errors.noAccessTitle")}>
+          {t("errors.noAccessText")}
+        </EmptyState>
+      </div>
+    );
+  }
+  return <Outlet />;
 }
-
-export default ProtectedRoute;

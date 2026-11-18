@@ -1,89 +1,119 @@
 import { useState } from "react";
-import { Link, NavLink, useNavigate } from "react-router-dom";
-import { useAuth } from "../context/AuthContext";
-import { useLanguage } from "../context/LanguageContext";
+import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
+import { useAuth } from "../context/useAuth";
+import { useLanguage } from "../context/useLanguage";
+import { initials } from "../utils/format";
+import Icon from "./ui/Icon";
 
-function Navbar() {
-  const { user, logout } = useAuth();
+export default function Navbar() {
+  const { user, isAdmin, logout } = useAuth();
   const { t, language, setLanguage } = useLanguage();
   const navigate = useNavigate();
+  const location = useLocation();
   const [isOpen, setIsOpen] = useState(false);
 
-  const closeMenu = () => setIsOpen(false);
 
   const handleLogout = () => {
     logout();
-    closeMenu();
     navigate("/login", { replace: true });
   };
 
-  const handleLanguageToggle = () => {
-    setLanguage(language === "en" ? "es" : "en");
-  };
-
-  const navLinkClass = ({ isActive }) =>
-    isActive ? "nav-link active" : "nav-link";
+  const linkClass = ({ isActive }) => `nav-link d-flex align-items-center gap-2${isActive ? " active" : ""}`;
 
   return (
-    <nav className="navbar navbar-expand-lg navbar-dark bg-dark">
-      <div className="container">
-        <Link className="navbar-brand" to="/" onClick={closeMenu}>
-          {t("nav.brand")}
+    <nav className="navbar navbar-expand-lg navbar-dark app-navbar" aria-label={t("nav.main")}>
+      <div className="container-xl">
+        <Link className="navbar-brand d-flex align-items-center gap-2" to="/">
+          <span className="brand-mark">
+            <Icon name="ballot" size={18} />
+          </span>
+          <span className="d-none d-sm-inline">{t("nav.brand")}</span>
+          <span className="d-sm-none">{t("nav.brandShort")}</span>
         </Link>
 
         <button
-          className="navbar-toggler"
+          className="navbar-toggler border-0"
           type="button"
           aria-controls="mainNavbar"
           aria-expanded={isOpen}
-          aria-label="Toggle navigation"
-          onClick={() => setIsOpen((previous) => !previous)}
+          aria-label={t("nav.toggleMenu")}
+          onClick={() => setIsOpen((open) => !open)}
         >
-          <span className="navbar-toggler-icon"></span>
+          <span className="navbar-toggler-icon" />
         </button>
 
+        {/* Clicking any link inside closes the mobile menu. */}
         <div
           className={`collapse navbar-collapse ${isOpen ? "show" : ""}`}
           id="mainNavbar"
+          onClick={(event) => {
+            if (event.target.closest("a")) setIsOpen(false);
+          }}
         >
-          <ul className="navbar-nav me-auto mb-2 mb-lg-0">
-            <li className="nav-item">
-              <NavLink className={navLinkClass} to="/" end onClick={closeMenu}>
-                {t("nav.home")}
-              </NavLink>
-            </li>
+          <ul className="navbar-nav me-auto mt-3 mt-lg-0 gap-lg-1">
+            {isAdmin && (
+              <li className="nav-item">
+                <NavLink className={linkClass} to="/admin" end>
+                  <Icon name="chart" size={16} />
+                  {t("nav.dashboard")}
+                </NavLink>
+              </li>
+            )}
+            {isAdmin && (
+              <li className="nav-item">
+                <NavLink className={linkClass} to="/admin/elections/new">
+                  <Icon name="ballot" size={16} />
+                  {t("nav.newElection")}
+                </NavLink>
+              </li>
+            )}
             {user && (
               <li className="nav-item">
-                <NavLink className={navLinkClass} to="/admin" onClick={closeMenu}>
-                  {t("nav.admin")}
+                <NavLink className={linkClass} to="/surveys">
+                  <Icon name="survey" size={16} />
+                  {t("nav.surveys")}
                 </NavLink>
               </li>
             )}
           </ul>
 
-          <div className="d-flex flex-column flex-lg-row align-items-stretch align-items-lg-center gap-2">
+          <div className="d-flex flex-column flex-lg-row align-items-stretch align-items-lg-center gap-2 py-3 py-lg-0">
+            <div className="btn-group btn-group-sm" role="group" aria-label={t("nav.language")}>
+              {["es", "en"].map((code) => (
+                <button
+                  key={code}
+                  type="button"
+                  className={`btn ${language === code ? "btn-light" : "btn-outline-light"}`}
+                  aria-pressed={language === code}
+                  onClick={() => setLanguage(code)}
+                  lang={code}
+                >
+                  {code.toUpperCase()}
+                </button>
+              ))}
+            </div>
+
             {user && (
-              <span className="navbar-text text-white me-lg-2">
-                {t("nav.welcome")}, <strong>{user.name}</strong>
-              </span>
+              <div className="d-flex align-items-center gap-2 text-white ms-lg-2">
+                <span className="avatar" aria-hidden="true">
+                  {user.picture ? <img src={user.picture} alt="" referrerPolicy="no-referrer" /> : initials(user.name)}
+                </span>
+                <span className="small lh-sm min-w-0">
+                  <span className="d-block fw-semibold text-truncate" style={{ maxWidth: "14rem" }}>
+                    {user.name}
+                  </span>
+                  <span className="d-block text-white-50">{isAdmin ? t("roles.admin") : t("roles.participant")}</span>
+                </span>
+                <button type="button" className="btn btn-sm btn-outline-light ms-auto ms-lg-2" onClick={handleLogout}>
+                  <Icon name="logout" size={16} className="me-1" />
+                  {t("nav.logout")}
+                </button>
+              </div>
             )}
-
-            <button
-              type="button"
-              className="btn btn-outline-light btn-sm"
-              onClick={handleLanguageToggle}
-            >
-              {language === "en" ? "ES" : "EN"}
-            </button>
-
-            {user && (
-              <button
-                type="button"
-                className="btn btn-danger btn-sm"
-                onClick={handleLogout}
-              >
-                {t("nav.logout")}
-              </button>
+            {!user && location.pathname !== "/login" && (
+              <Link className="btn btn-sm btn-light" to="/login">
+                {t("nav.login")}
+              </Link>
             )}
           </div>
         </div>
@@ -91,5 +121,3 @@ function Navbar() {
     </nav>
   );
 }
-
-export default Navbar;

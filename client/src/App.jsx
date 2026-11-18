@@ -1,43 +1,55 @@
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import { LanguageProvider } from "./context/LanguageContext";
-import { AuthProvider } from "./context/AuthContext";
-import Navbar from "./components/Navbar";
+import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { LanguageProvider } from "./context/LanguageProvider";
+import { AuthProvider } from "./context/AuthProvider";
+import { useAuth } from "./context/useAuth";
+import AppLayout from "./components/AppLayout";
 import ProtectedRoute from "./components/ProtectedRoute";
 import LoginView from "./pages/LoginView";
-import AdminView from "./pages/AdminView";
-import SurveyView from "./pages/SurveyView";
 import VotingView from "./pages/VotingView";
+import NotFoundView from "./pages/NotFoundView";
+import AdminView from "./pages/admin/AdminView";
+import ElectionCreateView from "./pages/admin/ElectionCreateView";
+import ElectionDetailView from "./pages/admin/ElectionDetailView";
+import SurveyCreateView from "./pages/admin/SurveyCreateView";
+import SurveyListView from "./pages/SurveyListView";
+import SurveyView from "./pages/SurveyView";
+
+/** Sends each person to their natural starting page. */
+function HomeRedirect() {
+  const { user, isAdmin } = useAuth();
+  if (!user) return <Navigate replace to="/login" />;
+  return <Navigate replace to={isAdmin ? "/admin" : "/surveys"} />;
+}
 
 function App() {
   return (
     <LanguageProvider>
       <AuthProvider>
         <BrowserRouter>
-          <Navbar />
-          <main className="container mt-4 mb-5">
-            <Routes>
-              {/* The root path redirects to the public survey dashboard */}
-              <Route path="/" element={<Navigate replace to="/survey" />} />
+          <Routes>
+            <Route element={<AppLayout />}>
+              <Route index element={<HomeRedirect />} />
+              <Route path="login" element={<LoginView />} />
+              {/* Public: the unique link token is the voter's only credential. */}
+              <Route path="vote" element={<VotingView />} />
 
-              {/* Public routes */}
-              <Route path="/login" element={<LoginView />} />
-              <Route path="/survey" element={<SurveyView />} />
-              <Route path="/vote" element={<VotingView />} />
+              <Route element={<ProtectedRoute />}>
+                <Route path="surveys" element={<SurveyListView />} />
+                <Route path="surveys/:surveyId" element={<SurveyView />} />
+              </Route>
 
-              {/* Protected route: requires a Google SSO session */}
-              <Route
-                path="/admin"
-                element={
-                  <ProtectedRoute>
-                    <AdminView />
-                  </ProtectedRoute>
-                }
-              />
+              <Route element={<ProtectedRoute requireAdmin />}>
+                <Route path="admin" element={<AdminView />} />
+                <Route path="admin/elections/new" element={<ElectionCreateView />} />
+                <Route path="admin/elections/:electionId" element={<ElectionDetailView />} />
+                <Route path="admin/surveys/new" element={<SurveyCreateView />} />
+              </Route>
 
-              {/* Catch-all route: avoids blank screens on unknown URLs */}
-              <Route path="*" element={<Navigate replace to="/survey" />} />
-            </Routes>
-          </main>
+              {/* Former route of the single survey dashboard. */}
+              <Route path="survey" element={<Navigate replace to="/surveys" />} />
+              <Route path="*" element={<NotFoundView />} />
+            </Route>
+          </Routes>
         </BrowserRouter>
       </AuthProvider>
     </LanguageProvider>

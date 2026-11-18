@@ -1,93 +1,108 @@
 import { useState } from "react";
-import { Navigate, useNavigate } from "react-router-dom";
+import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import { GoogleLogin, GoogleOAuthProvider } from "@react-oauth/google";
-import { AuthError, useAuth } from "../context/AuthContext";
-import { useLanguage } from "../context/LanguageContext";
+import { useAuth } from "../context/useAuth";
+import { useLanguage } from "../context/useLanguage";
 import { GOOGLE_CLIENT_ID } from "../config";
+import { ErrorNotice, Notice } from "../components/ui/Feedback";
+import Icon from "../components/ui/Icon";
 
-/** Maps backend error codes to translation keys. */
-const ERROR_KEY_BY_CODE = {
-  SSO_NOT_CONFIGURED: "login.errors.notConfigured",
-  INVALID_CREDENTIAL: "login.errors.invalidCredential",
-  UNAUTHORIZED_USER: "login.errors.notAuthorized",
-  NETWORK: "login.errors.network",
-};
+const FEATURES = ["login.features.elections", "login.features.weighted", "login.features.surveys", "login.features.security"];
 
-function LoginView() {
-  const { user, loginWithGoogle } = useAuth();
+/** Google SSO sign-in. Identity and role are decided by the server. */
+export default function LoginView() {
+  const { user, isAdmin, loginWithGoogle, sessionExpired } = useAuth();
   const { t, language } = useLanguage();
   const navigate = useNavigate();
-  const [isSigningIn, setIsSigningIn] = useState(false);
-  // Holds a translation KEY so the message follows the language switch.
-  const [errorKey, setErrorKey] = useState(
-    GOOGLE_CLIENT_ID ? null : "login.errors.missingClientId"
-  );
+  const location = useLocation();
+  const [signingIn, setSigningIn] = useState(false);
+  const [error, setError] = useState(null);
+  const [googleFailed, setGoogleFailed] = useState(false);
 
-  // Already authenticated users do not need to see the login screen.
-  if (user) {
-    return <Navigate replace to="/admin" />;
-  }
+  const target = location.state?.from;
+  if (user) return <Navigate replace to={target || (isAdmin ? "/admin" : "/surveys")} />;
 
-  const handleGoogleSuccess = async (credentialResponse) => {
-    if (!credentialResponse.credential) {
-      setErrorKey("login.errors.googleFailed");
+  const handleSuccess = async ({ credential }) => {
+    if (!credential) {
+      setGoogleFailed(true);
       return;
     }
-
-    setErrorKey(null);
-    setIsSigningIn(true);
+    setError(null);
+    setGoogleFailed(false);
+    setSigningIn(true);
     try {
-      await loginWithGoogle(credentialResponse.credential);
-      navigate("/admin", { replace: true });
-    } catch (error) {
-      const code = error instanceof AuthError ? error.code : "UNEXPECTED";
-      setErrorKey(ERROR_KEY_BY_CODE[code] ?? "login.errors.unexpected");
-      setIsSigningIn(false);
+      const signedIn = await loginWithGoogle(credential);
+      navigate(target || (signedIn.isAdmin ? "/admin" : "/surveys"), { replace: true });
+    } catch (caught) {
+      setError(caught);
+      setSigningIn(false);
     }
   };
 
   return (
-    <div className="container py-5">
-      <div className="row justify-content-center">
-        <div className="col-12 col-sm-10 col-md-8 col-lg-5 col-xl-4">
-          <div className="card shadow-sm border-0">
-            <div className="card-body p-4 p-md-5 text-center">
-              <h1 className="h3 fw-bold mb-2">{t("login.title")}</h1>
-              <p className="text-muted mb-4">{t("login.subtitle")}</p>
+    <div className="login-shell">
+      <div className="row g-0 w-100 justify-content-center">
+        <div className="col-12 col-lg-10 col-xl-9">
+          <div className="card app-card overflow-hidden">
+            <div className="row g-0">
+              <aside className="col-lg-6 login-aside p-4 p-md-5">
+                <span className="brand-mark mb-3" style={{ width: "2.75rem", height: "2.75rem" }}>
+                  <Icon name="ballot" size={24} />
+                </span>
+                <h1 className="h3 fw-bold mb-2" tabIndex={-1}>
+                  {t("nav.brand")}
+                </h1>
+                <p className="opacity-75 mb-4">{t("login.tagline")}</p>
+                <ul className="list-unstyled mb-0">
+                  {FEATURES.map((key) => (
+                    <li key={key} className="d-flex gap-2">
+                      <Icon name="check" className="mt-1" />
+                      <span>{t(key)}</span>
+                    </li>
+                  ))}
+                </ul>
+              </aside>
 
-              {errorKey && (
-                <div className="alert alert-danger" role="alert">
-                  {t(errorKey)}
-                </div>
-              )}
+              <div className="col-lg-6 p-4 p-md-5 d-flex flex-column justify-content-center">
+                <h2 className="h4 fw-semibold mb-1">{t("login.title")}</h2>
+                <p className="text-body-secondary mb-4">{t("login.subtitle")}</p>
 
-              {isSigningIn && (
-                <div className="d-flex align-items-center justify-content-center gap-2">
-                  <span
-                    className="spinner-border spinner-border-sm"
-                    role="status"
-                    aria-hidden="true"
-                  ></span>
-                  <span>{t("login.signingIn")}</span>
-                </div>
-              )}
+                {sessionExpired && !error && <Notice variant="warning">{t("login.sessionExpired")}</Notice>}
+                {!GOOGLE_CLIENT_ID && <Notice variant="danger">{t("login.missingClientId")}</Notice>}
+                {googleFailed && <Notice variant="danger">{t("login.googleFailed")}</Notice>}
+                <ErrorNotice error={error} />
 
-              {GOOGLE_CLIENT_ID && !isSigningIn && (
-                <GoogleOAuthProvider clientId={GOOGLE_CLIENT_ID}>
-                  <div className="d-flex justify-content-center">
-                    <GoogleLogin
-                      onSuccess={handleGoogleSuccess}
-                      onError={() => setErrorKey("login.errors.googleFailed")}
-                      locale={language}
-                      text="signin_with"
-                      shape="rectangular"
-                      width="280"
-                    />
+                {signingIn ? (
+                  <div className="d-flex align-items-center gap-2 py-2" role="status">
+                    <span className="spinner-border spinner-border-sm" aria-hidden="true" />
+                    {t("login.signingIn")}
                   </div>
-                </GoogleOAuthProvider>
-              )}
+                ) : (
+                  GOOGLE_CLIENT_ID && (
+                    <GoogleOAuthProvider clientId={GOOGLE_CLIENT_ID}>
+                      <div className="d-flex">
+                        <GoogleLogin
+                          onSuccess={handleSuccess}
+                          onError={() => setGoogleFailed(true)}
+                          locale={language}
+                          text="signin_with"
+                          shape="rectangular"
+                          width="280"
+                        />
+                      </div>
+                    </GoogleOAuthProvider>
+                  )
+                )}
 
-              <p className="small text-muted mt-4 mb-0">{t("login.ssoNotice")}</p>
+                <p className="small text-body-secondary mt-4 mb-0 d-flex gap-2">
+                  <Icon name="shield" className="mt-1" />
+                  <span>{t("login.ssoNotice")}</span>
+                </p>
+                <p className="small text-body-secondary mt-2 mb-0 d-flex gap-2">
+                  <Icon name="mail" className="mt-1" />
+                  <span>{t("login.votersNotice")}</span>
+                </p>
+              </div>
             </div>
           </div>
         </div>
@@ -95,5 +110,3 @@ function LoginView() {
     </div>
   );
 }
-
-export default LoginView;

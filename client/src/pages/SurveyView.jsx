@@ -1,709 +1,466 @@
-import { useCallback, useContext, useEffect, useMemo, useState } from "react";
-import { AuthContext } from "../context/AuthContext";
-import { LanguageContext } from "../context/LanguageContext";
+import { useCallback, useMemo, useState } from "react";
+import { useLocation, useParams } from "react-router-dom";
+import { useAuth } from "../context/useAuth";
+import { useLanguage } from "../context/useLanguage";
+import { useResource } from "../hooks/useResource";
+import { EmptyState, ErrorNotice, LoadingState, Notice } from "../components/ui/Feedback";
+import { Badge, PageHeader, ProgressBar, Section } from "../components/ui/Layout";
+import { Modal } from "../components/ui/Modal";
+import DemoIdentityBar from "../components/DemoIdentityBar";
+import Icon from "../components/ui/Icon";
+import { categoryLabel, formatDateTime, isValidEmail, normalizeEmail } from "../utils/format";
 
-const API_BASE = "http://localhost:8000";
-const SURVEY_URL = `${API_BASE}/api/survey`;
-const ANSWER_URL = `${API_BASE}/api/survey/answer`;
-const DELEGATE_URL = `${API_BASE}/api/survey/delegate`;
-const KNOWN_EMAILS_LIST_ID = "survey-known-emails";
-const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const KNOWN_EMAILS_ID = "survey-known-emails";
+const FILTERS = ["all", "mine", "pending", "answered"];
+const ROLE_TONES = { admin: "dark", recipient: "primary", participant: "secondary" };
 
-// ---------- Helpers ----------
-
-function normalizeEmail(value) {
-  return typeof value === "string" ? value.trim().toLowerCase() : "";
-}
-
-function isValidEmail(value) {
-  return EMAIL_PATTERN.test(normalizeEmail(value));
-}
-
-function formatCategory(category) {
-  const text = String(category || "uncategorized");
-  return text.charAt(0).toUpperCase() + text.slice(1);
-}
-
-/**
- * Returns the translated category title when the dictionary has one,
- * otherwise falls back to the capitalized raw category name.
- */
-function translateCategory(category, t) {
-  const normalized = String(category || "uncategorized").toLowerCase();
-  const key = `survey.categories.${normalized}`;
-  const translated = t(key);
-  return translated === key ? formatCategory(category) : translated;
-}
-
-function formatDate(isoString, locale) {
-  if (!isoString) return "";
-  const date = new Date(isoString);
-  return Number.isNaN(date.getTime()) ? "" : date.toLocaleString(locale);
-}
-
-/**
- * Builds an Error that carries a translation key so the message can be
- * rendered in the active language at display time.
- */
-function createTranslatableError(key, params) {
-  const error = new Error(key);
-  error.translationKey = key;
-  error.translationParams = params;
-  return error;
-}
-
-/**
- * Converts any thrown value into a message descriptor:
- * `{ key, params }` for client messages or `{ message }` for server text.
- */
-function describeError(err, fallbackKey) {
-  if (err && err.translationKey) {
-    return { key: err.translationKey, params: err.translationParams || null, message: "" };
-  }
-  if (err && err.message) {
-    return { key: null, params: null, message: err.message };
-  }
-  return { key: fallbackKey, params: null, message: "" };
-}
-
-/** Renders a message descriptor in the active language. */
-function renderMessage(t, descriptor) {
-  if (!descriptor) return "";
-  return descriptor.key ? t(descriptor.key, descriptor.params) : descriptor.message;
-}
-
-/** Derives global progress from the question list so the bar can never drift from the data. */
-function computeProgress(questions) {
-  const total = questions.length;
-  const answered = questions.filter((q) => q.status === "answered").length;
-  const percentage = total === 0 ? 0 : Math.round((answered / total) * 1000) / 10;
-  return { total, answered, pending: total - answered, percentage };
-}
-
-/** Groups questions by category, preserving the order in which categories first appear. */
-function groupByCategory(questions) {
-  const groups = new Map();
-  for (const question of questions) {
-    const key = String(question.category || "uncategorized").toLowerCase();
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(question);
-  }
-  return Array.from(groups, ([category, items]) => ({ category, items }));
-}
-
-/** Collects every email that appears in the survey, for the suggestion lists. */
 function collectKnownEmails(survey) {
-  const emails = new Set();
-  if (survey.initialRecipient) emails.add(normalizeEmail(survey.initialRecipient));
+  const emails = new Set([survey.initialRecipient]);
   for (const question of survey.questions) {
-    if (question.originalAssignee) emails.add(normalizeEmail(question.originalAssignee));
-    if (question.currentOwner) emails.add(normalizeEmail(question.currentOwner));
-    for (const entry of question.delegationHistory || []) {
-      if (entry.from) emails.add(normalizeEmail(entry.from));
-      if (entry.to) emails.add(normalizeEmail(entry.to));
+    emails.add(question.currentOwner);
+    emails.add(question.originalAssignee);
+    for (const entry of question.delegationHistory) {
+      emails.add(entry.from);
+      emails.add(entry.to);
     }
   }
-  emails.delete("");
-  return Array.from(emails).sort();
+  emails.delete(survey.viewerEmail);
+  return [...emails].filter(Boolean).sort();
 }
 
-function isDelegated(question) {
-  return (
-    (question.delegationHistory || []).length > 0 ||
-    normalizeEmail(question.currentOwner) !== normalizeEmail(question.originalAssignee)
-  );
-}
+/** Modal used for every delegation (one question, a selection or a whole category). */
+function DelegateModal({ target, survey, onClose, onDelegated }) {
+  const { request } = useAuth();
+  const { t, language } = useLanguage();
+  const [email, setEmail] = useState("");
+  const [touched, setTouched] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
 
-/**
- * POSTs JSON and returns the parsed body.
- * `extraHeaders` carries the Google SSO Bearer token when the acting user is signed in.
- */
-async function postJson(url, payload, extraHeaders = {}) {
-  let response;
-  try {
-    response = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...extraHeaders },
-      body: JSON.stringify(payload),
-    });
-  } catch {
-    throw createTranslatableError("errors.network");
-  }
+  if (!target) return null;
+  const invalid = !isValidEmail(email);
+  const self = normalizeEmail(email) === survey.viewerEmail;
 
-  let data = null;
-  try {
-    data = await response.json();
-  } catch {
-    // Non-JSON body: fall through to the generic message below.
-  }
-
-  if (!response.ok) {
-    if (data?.error) {
-      throw new Error(data.error);
+  const submit = async (event) => {
+    event?.preventDefault();
+    setTouched(true);
+    if (invalid || self) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const body = { newOwnerEmail: email.trim(), lang: language, ...(target.category ? { category: target.category } : { questionIds: target.questionIds }) };
+      const result = await request(`/api/surveys/${survey.id}/delegate`, { method: "POST", json: body, withActAs: true });
+      onDelegated(result, email.trim());
+    } catch (caught) {
+      setError(caught);
+      setSaving(false);
     }
-    throw createTranslatableError("errors.requestFailed", { status: response.status });
-  }
-  return data;
-}
-
-// ---------- Presentational components ----------
-
-function ActiveUserBar({ value, onChange, onRefresh, refreshing }) {
-  const { t } = useContext(LanguageContext);
-  const invalid = value.trim() !== "" && !isValidEmail(value);
-
-  return (
-    <div className="card shadow-sm mb-3 sticky-top" style={{ zIndex: 1020 }}>
-      <div className="card-body py-2">
-        <div className="row g-2 align-items-end">
-          <div className="col-12 col-md">
-            <label htmlFor="active-user-email" className="form-label small mb-1">
-              {t("survey.activeUser.label")}
-            </label>
-            <input
-              id="active-user-email"
-              type="email"
-              className={`form-control ${invalid ? "is-invalid" : ""}`}
-              list={KNOWN_EMAILS_LIST_ID}
-              value={value}
-              onChange={(event) => onChange(event.target.value)}
-              placeholder={t("survey.activeUser.placeholder")}
-              autoComplete="off"
-            />
-            <div className="invalid-feedback">{t("survey.activeUser.invalid")}</div>
-          </div>
-          <div className="col-12 col-md-auto">
-            <button
-              type="button"
-              className="btn btn-outline-secondary w-100"
-              onClick={onRefresh}
-              disabled={refreshing}
-            >
-              {refreshing ? t("survey.activeUser.refreshing") : t("survey.activeUser.refresh")}
-            </button>
-          </div>
-        </div>
-        <div className="form-text mt-1">{t("survey.activeUser.demoNote")}</div>
-      </div>
-    </div>
-  );
-}
-
-function GlobalProgress({ progress }) {
-  const { t } = useContext(LanguageContext);
-
-  return (
-    <div className="card shadow-sm mb-4">
-      <div className="card-body">
-        <div className="d-flex justify-content-between align-items-baseline mb-2">
-          <h2 className="h5 card-title mb-0">{t("survey.progress.title")}</h2>
-          <span className="fw-semibold">{progress.percentage}%</span>
-        </div>
-        <div
-          className="progress"
-          role="progressbar"
-          aria-label={t("survey.progress.ariaLabel")}
-          aria-valuenow={progress.percentage}
-          aria-valuemin="0"
-          aria-valuemax="100"
-          style={{ height: "1.5rem" }}
-        >
-          <div
-            className="progress-bar progress-bar-striped bg-success"
-            style={{ width: `${progress.percentage}%`, transition: "width 0.4s ease" }}
-          />
-        </div>
-        <p className="text-body-secondary small mb-0 mt-2">
-          {t("survey.progress.summary", {
-            answered: progress.answered,
-            total: progress.total,
-            pending: progress.pending,
-          })}
-        </p>
-      </div>
-    </div>
-  );
-}
-
-function QuestionCard({ question, activeEmail, busy, onAnswer, onDelegate }) {
-  const { t, language } = useContext(LanguageContext);
-  const [answerDraft, setAnswerDraft] = useState("");
-  const [delegateTo, setDelegateTo] = useState("");
-
-  const isAnswered = question.status === "answered";
-  const isOwner = normalizeEmail(activeEmail) === normalizeEmail(question.currentOwner);
-  const canAct = isOwner && !isAnswered;
-  const delegated = isDelegated(question);
-
-  const answerValue = isAnswered ? question.answer || "" : answerDraft;
-  const canSubmitAnswer = canAct && !busy && answerDraft.trim() !== "";
-  const canSubmitDelegation = canAct && !busy && isValidEmail(delegateTo);
-
-  let permissionNote = "";
-  if (isAnswered) {
-    permissionNote = question.answeredAt
-      ? t("survey.question.lockedWithDate", {
-          owner: question.currentOwner,
-          date: formatDate(question.answeredAt, language),
-        })
-      : t("survey.question.locked", { owner: question.currentOwner });
-  } else if (!isOwner) {
-    permissionNote = t("survey.question.onlyOwner", { owner: question.currentOwner });
-  }
-
-  const handleAnswer = async () => {
-    const saved = await onAnswer(question.id, answerDraft);
-    if (saved) setAnswerDraft("");
   };
 
-  const handleDelegate = async () => {
-    const transferred = await onDelegate({ questionId: question.id }, delegateTo);
-    if (transferred) setDelegateTo("");
-  };
+  const description = target.category
+    ? t("survey.delegate.categoryText", { category: categoryLabel(t, target.category), count: target.count })
+    : t("survey.delegate.questionsText", { count: target.questionIds.length });
 
   return (
-    <div className={`card h-100 shadow-sm ${isOwner && !isAnswered ? "border-primary" : ""}`}>
-      <div className="card-body d-flex flex-column">
-        <h3 className="h6 card-title">{question.text}</h3>
-
-        <div className="d-flex flex-wrap gap-1 mb-2">
-          <span
-            className={`badge ${isOwner ? "bg-primary" : "bg-secondary"} text-break text-wrap`}
-            title={t("survey.question.ownerTitle")}
-          >
-            {t("survey.question.owner", { owner: question.currentOwner })}
-          </span>
-          {delegated && (
-            <span className="badge bg-warning text-dark">{t("survey.question.delegated")}</span>
-          )}
-          <span className={`badge ${isAnswered ? "bg-success" : "bg-light text-dark border"}`}>
-            {isAnswered ? t("survey.question.answered") : t("survey.question.pending")}
-          </span>
-        </div>
-
-        {delegated && (
-          <p className="text-body-secondary small mb-2">
-            {t("survey.question.originallyAssigned", { assignee: question.originalAssignee })}
-          </p>
-        )}
-
-        <div className="mb-3">
-          <label htmlFor={`answer-${question.id}`} className="form-label small mb-1">
-            {t("survey.question.answerLabel")}
-          </label>
-          <textarea
-            id={`answer-${question.id}`}
-            className="form-control"
-            rows={2}
-            value={answerValue}
-            onChange={(event) => setAnswerDraft(event.target.value)}
-            disabled={!canAct || busy}
-            placeholder={canAct ? t("survey.question.answerPlaceholder") : ""}
-            maxLength={5000}
-          />
-          <button
-            type="button"
-            className="btn btn-primary btn-sm mt-2 w-100"
-            onClick={handleAnswer}
-            disabled={!canSubmitAnswer}
-          >
-            {t("survey.question.saveAnswer")}
+    <Modal
+      open
+      title={t("survey.delegate.title")}
+      onClose={onClose}
+      busy={saving}
+      footer={
+        <>
+          <button type="button" className="btn btn-outline-secondary" onClick={onClose} disabled={saving}>
+            {t("common.cancel")}
           </button>
-        </div>
-
-        <div className="mt-auto">
-          <label htmlFor={`delegate-${question.id}`} className="form-label small mb-1">
-            {t("survey.question.delegateLabel")}
-          </label>
-          <div className="input-group input-group-sm">
-            <input
-              id={`delegate-${question.id}`}
-              type="email"
-              className="form-control"
-              list={KNOWN_EMAILS_LIST_ID}
-              value={delegateTo}
-              onChange={(event) => setDelegateTo(event.target.value)}
-              disabled={!canAct || busy}
-              placeholder={t("survey.question.delegatePlaceholder")}
-              autoComplete="off"
-            />
-            <button
-              type="button"
-              className="btn btn-outline-primary"
-              onClick={handleDelegate}
-              disabled={!canSubmitDelegation}
-            >
-              {t("survey.question.delegate")}
-            </button>
-          </div>
-
-          {permissionNote && (
-            <div className="alert alert-secondary py-1 px-2 small mt-3 mb-0" role="note">
-              {permissionNote}
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
+          <button type="button" className="btn btn-primary" onClick={submit} disabled={saving}>
+            {saving && <span className="spinner-border spinner-border-sm me-2" aria-hidden="true" />}
+            {t("survey.delegate.submit")}
+          </button>
+        </>
+      }
+    >
+      <form onSubmit={submit} noValidate>
+        <p>{description}</p>
+        <Notice variant="info">{t("survey.delegate.rule")}</Notice>
+        <label className="form-label" htmlFor="delegate-email">{t("survey.delegate.email")}</label>
+        <input
+          id="delegate-email"
+          type="email"
+          data-autofocus
+          autoComplete="off"
+          list={KNOWN_EMAILS_ID}
+          className={`form-control ${touched && (invalid || self) ? "is-invalid" : ""}`}
+          value={email}
+          placeholder={t("placeholders.colleagueEmail")}
+          onChange={(event) => setEmail(event.target.value)}
+        />
+        <div className="invalid-feedback">{self ? t("survey.delegate.notSelf") : t("survey.delegate.invalidEmail")}</div>
+        <ErrorNotice error={error} className="mt-3 mb-0" />
+      </form>
+    </Modal>
   );
 }
 
-function CategoryDelegation({ category, items, activeEmail, busy, onDelegate }) {
-  const { t } = useContext(LanguageContext);
-  const [delegateTo, setDelegateTo] = useState("");
+function QuestionCard({ question, viewerEmail, selected, onToggleSelect, onDelegate, onAnswered, surveyId, disabled }) {
+  const { request } = useAuth();
+  const { t, locale } = useLanguage();
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
 
-  const pendingItems = items.filter((q) => q.status === "pending");
-  const ownedPending = pendingItems.filter(
-    (q) => normalizeEmail(q.currentOwner) === normalizeEmail(activeEmail),
-  );
-  const canDelegate = ownedPending.length > 0;
-  const canSubmit = canDelegate && !busy && isValidEmail(delegateTo);
-  const inputId = `delegate-category-${category}`;
+  const isMine = question.currentOwner === viewerEmail;
+  const answered = question.status === "answered";
+  const canAct = isMine && !answered;
+  const delegated = question.delegationHistory.length > 0;
 
-  let note = "";
-  if (pendingItems.length === 0) {
-    note = t("survey.category.allAnswered");
-  } else if (!canDelegate) {
-    const owners = Array.from(new Set(pendingItems.map((q) => q.currentOwner))).join(", ");
-    note = t("survey.category.notOwner", { owners });
-  }
-
-  const handleDelegate = async () => {
-    const transferred = await onDelegate({ category }, delegateTo);
-    if (transferred) setDelegateTo("");
+  const save = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      const result = await request(`/api/surveys/${surveyId}/questions/${question.id}/answer`, {
+        method: "POST",
+        json: { answer: draft },
+        withActAs: true,
+      });
+      setDraft("");
+      onAnswered(result.survey);
+    } catch (caught) {
+      setError(caught);
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
-    <div className="bg-body-tertiary rounded p-3 mb-3">
-      <label htmlFor={inputId} className="form-label fw-semibold small mb-1">
-        {t("survey.category.delegateLabel")}
-      </label>
-      <div className="input-group">
-        <input
-          id={inputId}
-          type="email"
-          className="form-control"
-          list={KNOWN_EMAILS_LIST_ID}
-          value={delegateTo}
-          onChange={(event) => setDelegateTo(event.target.value)}
-          disabled={!canDelegate || busy}
-          placeholder={t("survey.category.delegatePlaceholder")}
-          autoComplete="off"
-        />
-        <button
-          type="button"
-          className="btn btn-outline-primary"
-          onClick={handleDelegate}
-          disabled={!canSubmit}
-        >
-          {canDelegate
-            ? t("survey.category.delegateCount", { count: ownedPending.length })
-            : t("survey.category.delegateCategory")}
-        </button>
-      </div>
-      <div className="form-text">{t("survey.category.delegateHelp")}</div>
-      {note && (
-        <div className="alert alert-secondary py-1 px-2 small mt-2 mb-0" role="note">
-          {note}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function CategorySection({ category, items, isOpen, onToggle, activeEmail, busy, onAnswer, onDelegate }) {
-  const { t } = useContext(LanguageContext);
-  const progress = computeProgress(items);
-  const panelId = `category-panel-${category}`;
-  const categoryLabel = translateCategory(category, t);
-
-  return (
-    <div className="accordion-item">
-      <h2 className="accordion-header">
-        <button
-          type="button"
-          className={`accordion-button ${isOpen ? "" : "collapsed"}`}
-          onClick={onToggle}
-          aria-expanded={isOpen}
-          aria-controls={panelId}
-        >
-          <div className="w-100 pe-3">
-            <div className="d-flex flex-wrap justify-content-between align-items-center gap-1">
-              <span className="fw-semibold">{categoryLabel}</span>
-              <span className="badge bg-success">
-                {t("survey.category.answeredBadge", {
-                  answered: progress.answered,
-                  total: progress.total,
-                })}
-              </span>
-            </div>
-            <div
-              className="progress mt-2"
-              role="progressbar"
-              aria-label={t("survey.category.completionLabel", { category: categoryLabel })}
-              aria-valuenow={progress.percentage}
-              aria-valuemin="0"
-              aria-valuemax="100"
-              style={{ height: "0.4rem" }}
-            >
-              <div
-                className="progress-bar bg-success"
-                style={{ width: `${progress.percentage}%`, transition: "width 0.4s ease" }}
-              />
-            </div>
-          </div>
-        </button>
-      </h2>
-
-      <div id={panelId} className={`accordion-collapse collapse ${isOpen ? "show" : ""}`}>
-        <div className="accordion-body">
-          <CategoryDelegation
-            category={category}
-            items={items}
-            activeEmail={activeEmail}
-            busy={busy}
-            onDelegate={onDelegate}
+    <article className={`question-card ${isMine && !answered ? "is-mine" : ""} ${answered ? "is-answered" : ""}`}>
+      <div className="d-flex gap-2">
+        {canAct && (
+          <input
+            type="checkbox"
+            className="form-check-input mt-1 flex-shrink-0"
+            checked={selected}
+            onChange={() => onToggleSelect(question.id)}
+            aria-label={t("survey.question.select", { code: question.code })}
+            disabled={disabled}
           />
-
-          <div className="row g-3">
-            {items.map((question) => (
-              <div className="col-12 col-lg-6" key={question.id}>
-                <QuestionCard
-                  question={question}
-                  activeEmail={activeEmail}
-                  busy={busy}
-                  onAnswer={onAnswer}
-                  onDelegate={onDelegate}
-                />
-              </div>
-            ))}
+        )}
+        <div className="min-w-0 flex-grow-1">
+          <div className="d-flex flex-wrap align-items-center gap-2 mb-1">
+            <span className="question-code">{question.code}</span>
+            <Badge tone={answered ? "success" : "warning"} icon={answered ? "check" : "clock"}>
+              {answered ? t("survey.question.answered") : t("survey.question.pending")}
+            </Badge>
+            {delegated && <Badge tone="secondary" icon="forward">{t("survey.question.delegated")}</Badge>}
           </div>
+          <h3 className="h6 mb-2 text-break-all">{question.text}</h3>
+          <div className="small mb-2 text-break-all">
+            <span className="text-body-secondary">{t("survey.question.owner")}: </span>
+            <span className="fw-semibold">{isMine ? t("survey.question.you", { email: question.currentOwner }) : question.currentOwner}</span>
+          </div>
+
+          {answered && (
+            <div className="mb-2">
+              <div className="answer-box small">{question.answer}</div>
+              <div className="small text-body-secondary mt-1">
+                {t("survey.question.answeredBy", { email: question.answeredBy ?? question.currentOwner, date: formatDateTime(question.answeredAt, locale) })}
+              </div>
+            </div>
+          )}
+
+          {canAct && (
+            <div className="mb-2">
+              <label className="form-label small mb-1" htmlFor={`answer-${question.id}`}>{t("survey.question.answerLabel")}</label>
+              <textarea
+                id={`answer-${question.id}`}
+                className="form-control"
+                rows={3}
+                maxLength={5000}
+                value={draft}
+                placeholder={t("survey.question.answerPlaceholder")}
+                onChange={(event) => setDraft(event.target.value)}
+                disabled={saving || disabled}
+              />
+              <div className="d-flex flex-wrap gap-2 mt-2">
+                <button type="button" className="btn btn-sm btn-primary" onClick={save} disabled={saving || disabled || !draft.trim()}>
+                  {saving ? <span className="spinner-border spinner-border-sm me-1" aria-hidden="true" /> : <Icon name="check" size={16} className="me-1" />}
+                  {t("survey.question.save")}
+                </button>
+                <button type="button" className="btn btn-sm btn-outline-primary" onClick={() => onDelegate([question.id])} disabled={saving || disabled}>
+                  <Icon name="forward" size={16} className="me-1" />
+                  {t("survey.question.delegate")}
+                </button>
+              </div>
+              <ErrorNotice error={error} className="mt-2 mb-0" onDismiss={() => setError(null)} />
+            </div>
+          )}
+
+          {!canAct && !answered && (
+            <p className="small text-body-secondary mb-2">{t("survey.question.onlyOwner", { email: question.currentOwner })}</p>
+          )}
+
+          {delegated && (
+            <details className="small">
+              <summary className="text-body-secondary">{t("survey.question.history", { count: question.delegationHistory.length })}</summary>
+              <ul className="timeline mt-2">
+                <li>{t("survey.question.assignedTo", { email: question.originalAssignee })}</li>
+                {question.delegationHistory.map((entry, index) => (
+                  <li key={`${entry.delegatedAt}-${index}`} className="text-break-all">
+                    {t("survey.question.historyEntry", { from: entry.from, to: entry.to, date: formatDateTime(entry.delegatedAt, locale) })}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
         </div>
       </div>
-    </div>
+    </article>
   );
 }
-
-// ---------- Page ----------
 
 export default function SurveyView() {
-  const { t } = useContext(LanguageContext);
-  // Signed-in Google user (if any): the server verifies this identity through the session token.
-  const { user, authHeaders } = useContext(AuthContext);
+  const { surveyId } = useParams();
+  const { request } = useAuth();
+  const { t, locale } = useLanguage();
+  const location = useLocation();
 
-  const [survey, setSurvey] = useState(null);
-  const [activeEmail, setActiveEmail] = useState(user?.email ?? "");
-  const [openCategories, setOpenCategories] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [busy, setBusy] = useState(false);
-  // Message descriptors ({ key, params, message }) so text re-renders on language change.
-  const [error, setError] = useState(null);
-  const [feedback, setFeedback] = useState(null);
-
-  /** Replaces local state with the server's survey document. */
-  const applySurvey = useCallback((data) => {
-    const normalized = {
-      ...data,
-      questions: Array.isArray(data?.questions) ? data.questions : [],
-    };
-    setSurvey(normalized);
-    setActiveEmail((previous) => previous || normalized.initialRecipient || "");
-    setOpenCategories(
-      (previous) =>
-        previous ||
-        new Set(
-          normalized.questions.map((q) => String(q.category || "uncategorized").toLowerCase()),
-        ),
-    );
-  }, []);
-
-  const fetchSurvey = useCallback(async (signal) => {
-    const response = await fetch(SURVEY_URL, { signal });
-    if (!response.ok) {
-      throw createTranslatableError("errors.requestFailed", { status: response.status });
-    }
-    return response.json();
-  }, []);
-
-  useEffect(() => {
-    const controller = new AbortController();
-
-    const loadSurvey = async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        applySurvey(await fetchSurvey(controller.signal));
-      } catch (err) {
-        if (err.name !== "AbortError") {
-          setError(describeError(err, "survey.errors.loadFailed"));
-        }
-      } finally {
-        if (!controller.signal.aborted) setLoading(false);
-      }
-    };
-
-    loadSurvey();
-    return () => controller.abort();
-  }, [applySurvey, fetchSurvey]);
-
-  // Auto-dismiss feedback messages.
-  useEffect(() => {
-    if (!feedback) return undefined;
-    const timer = setTimeout(() => setFeedback(null), 6000);
-    return () => clearTimeout(timer);
-  }, [feedback]);
-
-  const refreshSurvey = useCallback(async () => {
-    setRefreshing(true);
-    try {
-      applySurvey(await fetchSurvey());
-    } catch (err) {
-      setFeedback({ type: "danger", ...describeError(err, "survey.errors.refreshFailed") });
-    } finally {
-      setRefreshing(false);
-    }
-  }, [applySurvey, fetchSurvey]);
-
-  /** Runs a mutation, applies the returned survey and reports the result. */
-  const runMutation = useCallback(
-    async (url, payload) => {
-      setBusy(true);
-      setFeedback(null);
-      try {
-        // Send the session token only when acting as the signed-in user; the server then
-        // takes the identity from the verified session instead of the request body.
-        const actor = payload.userEmail ?? payload.currentOwnerEmail ?? "";
-        const headers = user && normalizeEmail(actor) === normalizeEmail(user.email) ? authHeaders() : {};
-        const data = await postJson(url, payload, headers);
-        applySurvey(data.survey);
-        setFeedback(
-          data.message
-            ? { type: "success", key: null, params: null, message: data.message }
-            : { type: "success", key: "survey.saved", params: null, message: "" },
-        );
-        return true;
-      } catch (err) {
-        setFeedback({ type: "danger", ...describeError(err, "survey.errors.refreshFailed") });
-        // Re-sync silently: another user may have changed ownership in the meantime.
-        try {
-          applySurvey(await fetchSurvey());
-        } catch {
-          // Keep the current state if the re-sync also fails.
-        }
-        return false;
-      } finally {
-        setBusy(false);
-      }
-    },
-    [applySurvey, fetchSurvey, user, authHeaders],
+  const fetchSurvey = useCallback(
+    (signal) => request(`/api/surveys/${surveyId}`, { signal, withActAs: true }),
+    [request, surveyId]
   );
+  const { data: survey, error, loading, reload, setData } = useResource(fetchSurvey);
 
-  const handleAnswer = useCallback(
-    (questionId, answerText) =>
-      runMutation(ANSWER_URL, { questionId, userEmail: activeEmail.trim(), answerText }),
-    [runMutation, activeEmail],
-  );
+  const [filter, setFilter] = useState("all");
+  const [selection, setSelection] = useState(() => new Set());
+  const [delegateTarget, setDelegateTarget] = useState(null);
+  const [notice, setNotice] = useState(() => (location.state?.created ? { variant: "success", key: "survey.created" } : null));
 
-  /** `target` is either `{ questionId }` or `{ category }`. */
-  const handleDelegate = useCallback(
-    (target, newOwnerEmail) =>
-      runMutation(DELEGATE_URL, {
-        ...target,
-        currentOwnerEmail: activeEmail.trim(),
-        newOwnerEmail: newOwnerEmail.trim(),
-      }),
-    [runMutation, activeEmail],
-  );
+  const viewerEmail = survey?.viewerEmail ?? "";
+  const fullView = survey?.viewerRole === "admin" || survey?.viewerRole === "recipient";
 
-  const toggleCategory = (category) => {
-    setOpenCategories((previous) => {
-      const next = new Set(previous);
-      if (next.has(category)) next.delete(category);
-      else next.add(category);
-      return next;
+  const visible = useMemo(() => {
+    if (!survey) return [];
+    return survey.questions.filter((question) => {
+      if (filter === "mine") return question.currentOwner === viewerEmail;
+      if (filter === "pending") return question.status === "pending";
+      if (filter === "answered") return question.status === "answered";
+      return true;
     });
+  }, [survey, filter, viewerEmail]);
+
+  const groups = useMemo(() => {
+    const map = new Map();
+    for (const question of visible) {
+      if (!map.has(question.category)) map.set(question.category, []);
+      map.get(question.category).push(question);
+    }
+    return [...map.entries()];
+  }, [visible]);
+
+  const myPending = survey ? survey.questions.filter((q) => q.currentOwner === viewerEmail && q.status === "pending") : [];
+  const knownEmails = useMemo(() => (survey ? collectKnownEmails(survey) : []), [survey]);
+  const selectedIds = [...selection].filter((id) => myPending.some((question) => question.id === id));
+
+  const applySurvey = (next) => {
+    setData(next);
+    setSelection(new Set());
   };
 
-  const questions = survey?.questions ?? [];
-  const progress = useMemo(() => computeProgress(questions), [questions]);
-  const groups = useMemo(() => groupByCategory(questions), [questions]);
-  const knownEmails = useMemo(() => (survey ? collectKnownEmails(survey) : []), [survey]);
+  const toggleSelect = (id) =>
+    setSelection((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
 
-  if (loading) {
+  if (loading && !survey) return <LoadingState />;
+  if (error && !survey) {
     return (
-      <div className="d-flex justify-content-center py-5">
-        <div className="spinner-border text-primary" role="status">
-          <span className="visually-hidden">{t("survey.loading")}</span>
-        </div>
-      </div>
+      <>
+        <PageHeader title={t("survey.title")} backTo="/surveys" backLabel={t("surveys.title")} />
+        <DemoIdentityBar />
+        <ErrorNotice error={error} onRetry={reload} />
+      </>
     );
   }
 
-  if (error) {
-    return (
-      <div className="alert alert-danger" role="alert">
-        {renderMessage(t, error)}
-      </div>
-    );
-  }
+  const progress = survey.progress;
 
   return (
     <>
-      <datalist id={KNOWN_EMAILS_LIST_ID}>
+      <datalist id={KNOWN_EMAILS_ID}>
         {knownEmails.map((email) => (
           <option key={email} value={email} />
         ))}
       </datalist>
 
-      <h1 className="h4 mb-3">{survey?.title || t("survey.dashboardTitle")}</h1>
-
-      <ActiveUserBar
-        value={activeEmail}
-        onChange={setActiveEmail}
-        onRefresh={refreshSurvey}
-        refreshing={refreshing}
+      <PageHeader
+        title={survey.title}
+        backTo="/surveys"
+        backLabel={t("surveys.title")}
+        badges={
+          <>
+            <Badge tone={ROLE_TONES[survey.viewerRole]}>{t(`roles.${survey.viewerRole}`)}</Badge>
+            <Badge tone="secondary" icon="user">{t("survey.recipient", { email: survey.initialRecipient })}</Badge>
+          </>
+        }
+        actions={
+          <button type="button" className="btn btn-outline-secondary" onClick={reload} disabled={loading}>
+            <Icon name="refresh" className="me-1" />
+            {t("common.refresh")}
+          </button>
+        }
       />
+      <DemoIdentityBar />
 
-      <GlobalProgress progress={progress} />
+      {notice && (
+        <Notice variant={notice.variant} onDismiss={() => setNotice(null)}>
+          {t(notice.key, notice.params)}
+        </Notice>
+      )}
+      <ErrorNotice error={error} onRetry={reload} />
 
-      {groups.length === 0 ? (
-        <div className="alert alert-info" role="alert">
-          {t("survey.noQuestions")}
+      <div className="row g-4">
+        <div className="col-12 col-xl-4 order-xl-2">
+          <Section title={t("survey.progress.title")} description={t("survey.progress.consolidated")}>
+            <div className="d-flex align-items-baseline justify-content-between mb-1">
+              <span className="stat-value">{progress.completionPercentage.toLocaleString(locale, { maximumFractionDigits: 1 })}%</span>
+              <span className="small text-body-secondary">
+                {t("admin.surveys.answeredOf", { answered: progress.answeredQuestions, total: progress.totalQuestions })}
+              </span>
+            </div>
+            <ProgressBar value={progress.completionPercentage} tone="success" label={t("survey.progress.title")} height={10} />
+
+            <h3 className="h6 mt-4 mb-2">{t("survey.progress.byCategory")}</h3>
+            <div className="d-grid gap-2">
+              {Object.entries(progress.byCategory).map(([category, item]) => (
+                <div key={category}>
+                  <div className="d-flex justify-content-between small">
+                    <span>{categoryLabel(t, category)}</span>
+                    <span className="text-body-secondary">{item.answered}/{item.total}</span>
+                  </div>
+                  <ProgressBar value={item.percentage} label={categoryLabel(t, category)} height={6} />
+                </div>
+              ))}
+            </div>
+
+            {fullView && Object.keys(progress.pendingByOwner).length > 0 && (
+              <>
+                <h3 className="h6 mt-4 mb-2">{t("survey.progress.pendingByOwner")}</h3>
+                <ul className="list-unstyled small mb-0 d-grid gap-1">
+                  {Object.entries(progress.pendingByOwner).map(([email, count]) => (
+                    <li key={email} className="d-flex justify-content-between gap-2">
+                      <span className="text-break-all">{email === viewerEmail ? t("survey.question.you", { email }) : email}</span>
+                      <span className="fw-semibold">{count}</span>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+          </Section>
         </div>
-      ) : (
-        <div className="accordion mb-5">
-          {groups.map(({ category, items }) => (
-            <CategorySection
-              key={category}
-              category={category}
-              items={items}
-              isOpen={openCategories?.has(category) ?? true}
-              onToggle={() => toggleCategory(category)}
-              activeEmail={activeEmail}
-              busy={busy}
-              onAnswer={handleAnswer}
-              onDelegate={handleDelegate}
-            />
-          ))}
+
+        <div className="col-12 col-xl-8 order-xl-1">
+          {survey.hiddenQuestionCount > 0 && (
+            <Notice variant="info">{t("survey.restrictedView", { count: survey.hiddenQuestionCount })}</Notice>
+          )}
+          {myPending.length > 0 && (
+            <Notice variant="warning">{t("survey.myPending", { count: myPending.length })}</Notice>
+          )}
+
+          <div className="btn-group flex-wrap mb-3" role="group" aria-label={t("survey.filters.label")}>
+            {FILTERS.map((key) => (
+              <button
+                key={key}
+                type="button"
+                className={`btn btn-sm ${filter === key ? "btn-primary" : "btn-outline-primary"}`}
+                aria-pressed={filter === key}
+                onClick={() => setFilter(key)}
+              >
+                {t(`survey.filters.${key}`)}
+              </button>
+            ))}
+          </div>
+
+          {groups.length === 0 && (
+            <div className="card app-card">
+              <EmptyState icon="list" title={t("survey.noQuestions")} />
+            </div>
+          )}
+
+          {groups.map(([category, questions]) => {
+            const ownedPending = survey.questions.filter(
+              (question) => question.category === category && question.status === "pending" && question.currentOwner === viewerEmail
+            );
+            const stats = progress.byCategory[category];
+            return (
+              <Section
+                key={category}
+                title={categoryLabel(t, category)}
+                description={stats ? t("survey.categoryProgress", { answered: stats.answered, total: stats.total }) : undefined}
+                actions={
+                  ownedPending.length > 0 && (
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-outline-primary"
+                      onClick={() => setDelegateTarget({ category, count: ownedPending.length })}
+                    >
+                      <Icon name="forward" size={16} className="me-1" />
+                      {t("survey.delegateCategory", { count: ownedPending.length })}
+                    </button>
+                  )
+                }
+              >
+                <div className="d-grid gap-3">
+                  {questions.map((question) => (
+                    <QuestionCard
+                      key={question.id}
+                      question={question}
+                      viewerEmail={viewerEmail}
+                      surveyId={survey.id}
+                      selected={selection.has(question.id)}
+                      onToggleSelect={toggleSelect}
+                      onDelegate={(questionIds) => setDelegateTarget({ questionIds })}
+                      onAnswered={(next) => {
+                        applySurvey(next);
+                        setNotice({ variant: "success", key: "survey.answerSaved" });
+                      }}
+                      disabled={Boolean(delegateTarget)}
+                    />
+                  ))}
+                </div>
+              </Section>
+            );
+          })}
+        </div>
+      </div>
+
+      {selectedIds.length > 0 && (
+        <div className="card app-card sticky-toolbar">
+          <div className="card-body d-flex flex-column flex-sm-row align-items-sm-center gap-2">
+            <span className="flex-grow-1 fw-semibold" aria-live="polite">{t("survey.selected", { count: selectedIds.length })}</span>
+            <button type="button" className="btn btn-outline-secondary btn-sm" onClick={() => setSelection(new Set())}>
+              {t("survey.clearSelection")}
+            </button>
+            <button type="button" className="btn btn-primary btn-sm" onClick={() => setDelegateTarget({ questionIds: selectedIds })}>
+              <Icon name="forward" size={16} className="me-1" />
+              {t("survey.delegateSelected")}
+            </button>
+          </div>
         </div>
       )}
 
-      {feedback && (
-        <div
-          className={`alert alert-${feedback.type} alert-dismissible shadow position-fixed bottom-0 start-0 end-0 m-3`}
-          style={{ zIndex: 1080 }}
-          role={feedback.type === "danger" ? "alert" : "status"}
-        >
-          {renderMessage(t, feedback)}
-          <button
-            type="button"
-            className="btn-close"
-            aria-label={t("survey.dismissMessage")}
-            onClick={() => setFeedback(null)}
-          />
-        </div>
-      )}
+      <DelegateModal
+        key={delegateTarget ? JSON.stringify(delegateTarget) : "closed"}
+        target={delegateTarget}
+        survey={survey}
+        onClose={() => setDelegateTarget(null)}
+        onDelegated={(result, email) => {
+          applySurvey(result.survey);
+          setDelegateTarget(null);
+          setNotice({ variant: "success", key: "survey.delegated", params: { count: result.transferredQuestionIds.length, email } });
+        }}
+      />
     </>
   );
 }
