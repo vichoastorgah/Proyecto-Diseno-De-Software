@@ -36,7 +36,7 @@ A web platform that manages **weighted electronic votes** and **mass questionnai
   versioned in Git.
 - **Multiple surveys** with atomic delegation of several questions or a whole category and email notifications.
 - **Frontend redesign** of every view, shared UI components, live CSV validation, complete ES/EN dictionaries.
-- **Quality:** 41 backend integration tests (on PostgreSQL), ESLint clean (was 5 errors / 2 warnings), i18n consistency script,
+- **Quality:** 44 backend tests (on PostgreSQL), ESLint clean (was 5 errors / 2 warnings), i18n consistency script,
   headless browser checks.
 
 ---
@@ -127,7 +127,7 @@ Client `.env`: `VITE_API_BASE_URL`, `VITE_GOOGLE_CLIENT_ID`.
 
 | Command | What it checks |
 |---------|----------------|
-| `deno task test` | 41 integration tests on PostgreSQL (PGlite): CSV, elections, attachments, voting (weights, single use, concurrency, expiry, closed votes), surveys (delegation, visibility), auth (roles, expired/tampered sessions), legacy import |
+| `deno task test` | 44 integration tests on PostgreSQL (PGlite) and the Supabase Storage adapter: CSV, elections, attachments, voting (weights, single use, concurrency, expiry, closed votes), surveys (delegation, visibility), auth (roles, expired/tampered sessions), legacy import |
 | `deno task check` / `deno task lint` | TypeScript types and lint rules of the server |
 | `cd client && npm run lint` | ESLint (React hooks rules) |
 | `cd client && npm run check:i18n` | Same keys in `es.json`/`en.json`; every `t("…")` key exists |

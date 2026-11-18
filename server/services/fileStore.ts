@@ -87,7 +87,7 @@ export function createLocalFileStore(directory: string): FileStore {
 export interface SupabaseStoreOptions {
   /** Project URL, e.g. https://abcd.supabase.co */
   url: string;
-  /** Service-role key (server only). */
+  /** Secret key `sb_secret_...` (current) or legacy `service_role` JWT. Server only. */
   serviceKey: string;
   /** Private bucket name. */
   bucket: string;
@@ -99,7 +99,12 @@ export function createSupabaseFileStore(options: SupabaseStoreOptions): FileStor
   const base = `${options.url.replace(/\/+$/, "")}/storage/v1/object`;
   const bucket = encodeURIComponent(options.bucket);
   const doFetch = options.fetchFn ?? fetch;
-  const auth = { Authorization: `Bearer ${options.serviceKey}`, apikey: options.serviceKey };
+  // New secret keys (sb_secret_...) are not JWTs and must only travel in `apikey`;
+  // the legacy service_role key is a JWT and is also accepted as a Bearer token.
+  const isLegacyJwt = /^eyJ[\w-]*\.[\w-]+\.[\w-]+$/.test(options.serviceKey);
+  const auth: Record<string, string> = isLegacyJwt
+    ? { apikey: options.serviceKey, Authorization: `Bearer ${options.serviceKey}` }
+    : { apikey: options.serviceKey };
   const objectUrl = (name: string) => `${base}/${bucket}/${encodeURIComponent(name)}`;
 
   return {

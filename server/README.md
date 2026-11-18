@@ -6,7 +6,7 @@ are found.
 ```bash
 deno task dev      # watch mode, http://localhost:8000
 deno task start    # without watch
-deno task test     # 41 integration tests (PostgreSQL via PGlite)
+deno task test     # 44 tests (PostgreSQL via PGlite, Storage adapter with a fake fetch)
 deno task check    # type check (server + tests)
 deno task lint
 ```
