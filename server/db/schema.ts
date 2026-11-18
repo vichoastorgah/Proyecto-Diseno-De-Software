@@ -68,7 +68,7 @@ const MIGRATIONS: readonly string[] = [
     has_voted         INTEGER NOT NULL DEFAULT 0 CHECK (has_voted IN (0, 1)),
     voted_at          TEXT,
     invitation_status TEXT NOT NULL DEFAULT 'pending'
-                      CHECK (invitation_status IN ('pending', 'sent', 'simulated', 'failed')),
+                      CHECK (invitation_status IN ('pending', 'sent', 'simulated', 'failed', 'legacy')),
     invited_at        TEXT,
     created_at        TEXT NOT NULL,
     UNIQUE (election_id, email),

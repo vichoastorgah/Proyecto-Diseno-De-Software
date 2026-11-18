@@ -3,7 +3,7 @@
  * Typed view of the environment variables. Read once at startup (`loadConfig`) and passed
  * explicitly to the services, so tests can build their own configuration.
  */
-import { fromFileUrl, isAbsolute, join } from "jsr:@std/path@^1";
+import { fromFileUrl, isAbsolute, join } from "@std/path";
 
 /** Absolute path of the `server/` directory. */
 export const SERVER_DIR = fromFileUrl(new URL(".", import.meta.url));

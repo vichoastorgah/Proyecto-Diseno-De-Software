@@ -1,291 +1,199 @@
 /**
  * @module services/votingService
- * Voting engine: token validation, single-vote enforcement and server-side weighting.
+ * Voter side: opening a ballot from a unique link and casting it.
  *
- * Unified `motions.json` schema (an array):
- * `[{ id, title, description, options: string[], results: Record<string, number> }]`
- * Extra fields written by the admin dispatch (`attachment`, `voterCount`, `createdAt`)
- * are preserved. Legacy files are migrated transparently: a `{ "motions": [...] }`
- * wrapper is unwrapped, a missing `options` defaults to `approve`/`reject` and a
- * missing `results` starts at zero. The file is rewritten in the unified shape on the
- * next vote.
+ * Rules enforced on the server (never only in the UI):
+ * - The link token must exist (looked up by its SHA-256 hash), not be expired, and its
+ *   election must be open.
+ * - One ballot per voter: the ballot covers every motion of the election and is stored
+ *   atomically. `UPDATE ... WHERE has_voted = 0` guarantees that two concurrent requests
+ *   with the same link cannot both succeed.
+ * - The weight comes from the voter record (CSV), never from the request.
+ * - Ballots are stored without any reference to the voter (secret vote).
  */
-import { withWriteLock } from "../utils/fileLock.ts";
+import { AppError, notFound, validationError } from "../errors.ts";
+import { all, get, run, transaction } from "../db/database.ts";
+import type { ServiceContext } from "../context.ts";
+import { hashToken, isWellFormedToken } from "./tokenService.ts";
+import type { AttachmentSummary } from "./electionService.ts";
 
-const VOTERS_FILE = new URL("../voters.json", import.meta.url);
-const MOTIONS_FILE = new URL("../motions.json", import.meta.url);
-const VOTERS_TEMP_FILE = new URL("../voters.json.tmp", import.meta.url);
-const MOTIONS_TEMP_FILE = new URL("../motions.json.tmp", import.meta.url);
-
-/** Options used when a motion does not define its own. */
-export const DEFAULT_MOTION_OPTIONS: readonly string[] = ["approve", "reject"];
-
-/** Stable machine-readable reasons, mapped to translations by the frontend. */
-export type VotingErrorCode =
-  | "INVALID_TOKEN"
-  | "TOKEN_EXPIRED"
-  | "ALREADY_VOTED"
-  | "MOTION_NOT_FOUND"
-  | "INVALID_OPTION";
-
-/** Error carrying the HTTP status the HTTP layer should answer with. */
-export class VotingServiceError extends Error {
-  readonly status: number;
-  readonly code: VotingErrorCode;
-
-  constructor(status: number, code: VotingErrorCode, message: string) {
-    super(message);
-    this.name = "VotingServiceError";
-    this.status = status;
-    this.code = code;
-  }
-}
-
-/** File stored for a motion by the admin dispatch. */
-export interface MotionAttachment {
-  originalName: string;
-  storedName: string;
-  mimeType: string;
-  size: number;
-}
-
-/** A motion as stored in `motions.json`. */
-export interface Motion {
-  id: string;
-  title: string;
-  description: string;
-  options: string[];
-  results: Record<string, number>;
-  attachment?: MotionAttachment;
-  voterCount?: number;
-  createdAt?: string;
-}
-
-/** A voter as stored in `voters.json` (only the fields this service relies on). */
-interface StoredVoter {
-  email: string;
+interface VoterRecord {
+  id: number;
+  election_id: string;
   name: string;
   weight: number;
-  token: string;
-  hasVoted: boolean;
-  motionId?: string;
-  tokenExpiresAt?: string;
-  [extra: string]: unknown;
+  has_voted: number;
+  token_expires_at: string | null;
 }
 
-/** Data the voting page needs, without leaking other voters or weights. */
-export interface VotingContext {
-  motion: {
-    id: string;
-    title: string;
-    description: string;
-    options: string[];
-  };
-  voter: {
-    name: string;
-    hasVoted: boolean;
-    isExpired: boolean;
-    tokenExpiresAt: string | null;
-  };
+export interface BallotContext {
+  election: { id: string; title: string; description: string; status: "open" | "closed" };
+  motions: { id: string; title: string; description: string; options: string[] }[];
+  attachments: AttachmentSummary[];
+  voter: { name: string; hasVoted: boolean; isExpired: boolean; tokenExpiresAt: string | null };
 }
 
-// ---------- Persistence helpers (never call withWriteLock from here) ----------
+function invalidToken(): AppError {
+  return notFound("INVALID_TOKEN", "Invalid voting link.");
+}
 
-/** Coerces any stored motion into the unified schema; returns null if it has no id. */
-function normalizeMotion(raw: unknown): Motion | null {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
-  const record = raw as Record<string, unknown>;
+/** Legacy records imported from JSON may have no expiry: they never expire. */
+function isExpired(expiresAt: string | null, now = Date.now()): boolean {
+  if (expiresAt === null) return false;
+  const time = Date.parse(expiresAt);
+  return Number.isNaN(time) || time <= now;
+}
 
-  const id = record.id;
-  if (typeof id !== "string" || id === "") return null;
+function findVoter(ctx: ServiceContext, token: unknown): VoterRecord {
+  if (!isWellFormedToken(token)) throw invalidToken();
+  const voter = get<VoterRecord>(
+    ctx.db,
+    "SELECT id, election_id, name, weight, has_voted, token_expires_at FROM voters WHERE token_hash = ?",
+    hashToken(token),
+  );
+  if (!voter) throw invalidToken();
+  return voter;
+}
 
-  const declaredOptions = Array.isArray(record.options)
-    ? record.options
-      .filter((option): option is string => typeof option === "string")
-      .map((option) => option.trim())
-      .filter((option) => option !== "")
-    : [];
-  const options = [...new Set(declaredOptions.length > 0 ? declaredOptions : DEFAULT_MOTION_OPTIONS)];
+function loadMotions(ctx: ServiceContext, electionId: string) {
+  const motions = all<{ id: string; title: string; description: string }>(
+    ctx.db, "SELECT id, title, description FROM motions WHERE election_id = ? ORDER BY position", electionId,
+  );
+  const options = all<{ motion_id: string; id: number; label: string }>(
+    ctx.db,
+    `SELECT o.motion_id, o.id, o.label FROM motion_options o JOIN motions m ON m.id = o.motion_id
+     WHERE m.election_id = ? ORDER BY o.position`,
+    electionId,
+  );
+  return motions.map((motion) => ({
+    ...motion,
+    options: options.filter((option) => option.motion_id === motion.id),
+  }));
+}
 
-  const rawResults = typeof record.results === "object" && record.results !== null &&
-      !Array.isArray(record.results)
-    ? record.results as Record<string, unknown>
-    : {};
-  const results: Record<string, number> = {};
-  for (const [key, value] of Object.entries(rawResults)) {
-    const amount = Number(value);
-    if (Number.isFinite(amount) && amount >= 0) results[key] = amount;
-  }
-  for (const option of options) results[option] ??= 0;
+/**
+ * Returns what the ballot page needs for a link (no other voter, no weight, no results).
+ * @throws {AppError} 404 INVALID_TOKEN.
+ */
+export function getBallot(ctx: ServiceContext, token: unknown): BallotContext {
+  const voter = findVoter(ctx, token);
+  const election = get<{ id: string; title: string; description: string; status: "open" | "closed" }>(
+    ctx.db, "SELECT id, title, description, status FROM elections WHERE id = ?", voter.election_id,
+  );
+  if (!election) throw invalidToken();
+
+  const attachments = all<{ id: string; original_name: string; mime_type: string; size: number }>(
+    ctx.db, "SELECT id, original_name, mime_type, size FROM attachments WHERE election_id = ? ORDER BY created_at, id", election.id,
+  ).map((row) => ({ id: row.id, name: row.original_name, mimeType: row.mime_type, size: Number(row.size) }));
 
   return {
-    ...record,
-    id,
-    title: typeof record.title === "string" ? record.title : "",
-    description: typeof record.description === "string" ? record.description : "",
-    options,
-    results,
-  } as Motion;
-}
-
-/**
- * Reads and normalizes every motion.
- * Accepts the unified array and the legacy `{ motions: [] }` wrapper.
- *
- * @returns The motions, or an empty list if the file does not exist yet.
- */
-export async function readMotions(): Promise<Motion[]> {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(await Deno.readTextFile(MOTIONS_FILE));
-  } catch (error) {
-    if (error instanceof Deno.errors.NotFound) return [];
-    throw error;
-  }
-
-  const list: unknown = Array.isArray(parsed)
-    ? parsed
-    : (parsed as { motions?: unknown } | null)?.motions;
-  if (!Array.isArray(list)) throw new Error("motions.json is corrupted.");
-
-  return list.map(normalizeMotion).filter((motion): motion is Motion => motion !== null);
-}
-
-/** Finds one motion by id, or `undefined`. */
-export async function getMotionById(motionId: string): Promise<Motion | undefined> {
-  return (await readMotions()).find((motion) => motion.id === motionId);
-}
-
-/** Reads the voters file, also returning the raw text so a failed vote can be rolled back. */
-async function readVotersFile(): Promise<{ voters: StoredVoter[]; raw: string }> {
-  let raw: string;
-  try {
-    raw = await Deno.readTextFile(VOTERS_FILE);
-  } catch (error) {
-    if (error instanceof Deno.errors.NotFound) return { voters: [], raw: "[]" };
-    throw error;
-  }
-  const parsed: unknown = JSON.parse(raw);
-  if (!Array.isArray(parsed)) throw new Error("voters.json is corrupted.");
-  return { voters: parsed as StoredVoter[], raw };
-}
-
-/** Writes JSON through a temp file + rename so a crash never leaves partial JSON. */
-async function writeJsonAtomic(file: URL, tempFile: URL, data: unknown): Promise<void> {
-  await Deno.writeTextFile(tempFile, JSON.stringify(data, null, 2));
-  await Deno.rename(tempFile, file);
-}
-
-/**
- * Tells whether a voter's token has expired.
- * Legacy records without `tokenExpiresAt` never expire; an unparsable date fails closed.
- */
-function isTokenExpired(voter: StoredVoter, now: Date): boolean {
-  if (typeof voter.tokenExpiresAt !== "string") return false;
-  const expiresAt = Date.parse(voter.tokenExpiresAt);
-  return Number.isNaN(expiresAt) || expiresAt <= now.getTime();
-}
-
-/** Builds the generic "invalid token" error (also used for tokens of another motion). */
-function invalidToken(): VotingServiceError {
-  return new VotingServiceError(404, "INVALID_TOKEN", "Invalid voting token.");
-}
-
-// ---------- Public API ----------
-
-/**
- * Returns the motion and voter status behind a voting link (read-only, no lock needed:
- * writers replace files atomically, so a reader always sees a complete file).
- *
- * @param token Single-use token from the email link.
- * @throws {VotingServiceError} 404 INVALID_TOKEN or MOTION_NOT_FOUND.
- */
-export async function getVotingContext(token: string): Promise<VotingContext> {
-  if (typeof token !== "string" || token === "") throw invalidToken();
-
-  const { voters } = await readVotersFile();
-  const voter = voters.find((candidate) => candidate.token === token);
-  if (!voter || typeof voter.motionId !== "string") throw invalidToken();
-
-  const motion = await getMotionById(voter.motionId);
-  if (!motion) {
-    throw new VotingServiceError(404, "MOTION_NOT_FOUND", "Motion not found.");
-  }
-
-  return {
-    motion: {
+    election,
+    motions: loadMotions(ctx, election.id).map((motion) => ({
       id: motion.id,
       title: motion.title,
       description: motion.description,
-      options: motion.options,
-    },
+      options: motion.options.map((option) => option.label),
+    })),
+    attachments,
     voter: {
       name: voter.name,
-      hasVoted: voter.hasVoted === true,
-      isExpired: isTokenExpired(voter, new Date()),
-      tokenExpiresAt: typeof voter.tokenExpiresAt === "string" ? voter.tokenExpiresAt : null,
+      hasVoted: voter.has_voted === 1,
+      isExpired: isExpired(voter.token_expires_at),
+      tokenExpiresAt: voter.token_expires_at,
     },
   };
 }
 
+/** Returns the election an attachment download is allowed for (the link's election). */
+export function getElectionIdForToken(ctx: ServiceContext, token: unknown): string {
+  return findVoter(ctx, token).election_id;
+}
+
 /**
- * Registers one weighted vote.
- *
- * Order of checks: token exists and belongs to `motionId` -> not already used ->
- * not expired -> motion exists -> `choice` is one of the motion's options.
- * The voter's `weight` is added to the chosen option on the server; the client
- * never sends a weight.
- *
- * @throws {VotingServiceError} 404 INVALID_TOKEN / MOTION_NOT_FOUND, 403 ALREADY_VOTED /
- *         TOKEN_EXPIRED, 400 INVALID_OPTION.
+ * Normalizes the request body into `{ motionId: optionLabel }`.
+ * Also accepts the former single-motion body `{ motionId, choice }`.
  */
-export function processVote(token: string, motionId: string, choice: string): Promise<void> {
-  return withWriteLock(async () => {
-    if (typeof token !== "string" || token === "") throw invalidToken();
-
-    // 1. Load voters and locate the token.
-    const { voters, raw: votersRaw } = await readVotersFile();
-    const voterIndex = voters.findIndex((candidate) => candidate.token === token);
-    if (voterIndex === -1) throw invalidToken();
-
-    // 2. A token issued for one motion must never be accepted for another one.
-    const voter = voters[voterIndex];
-    if (voter.motionId !== motionId) throw invalidToken();
-
-    // 3. Block double voting and expired links.
-    if (voter.hasVoted) {
-      throw new VotingServiceError(403, "ALREADY_VOTED", "Voter has already cast a vote.");
+export function readChoices(body: Record<string, unknown>): Record<string, string> {
+  if (typeof body.choices === "object" && body.choices !== null && !Array.isArray(body.choices)) {
+    const choices: Record<string, string> = {};
+    for (const [motionId, choice] of Object.entries(body.choices as Record<string, unknown>)) {
+      if (typeof choice !== "string") throw validationError("Every choice must be a string.");
+      choices[motionId] = choice;
     }
-    if (isTokenExpired(voter, new Date())) {
-      throw new VotingServiceError(403, "TOKEN_EXPIRED", "Voting token has expired.");
+    return choices;
+  }
+  if (typeof body.motionId === "string" && typeof body.choice === "string") {
+    return { [body.motionId]: body.choice };
+  }
+  throw validationError("Missing choices.");
+}
+
+/**
+ * Casts the ballot of the voter behind `token`.
+ * @param choices `{ motionId: optionLabel }` for EVERY motion of the election.
+ * @throws {AppError} 404 INVALID_TOKEN; 403 ALREADY_VOTED / TOKEN_EXPIRED / ELECTION_CLOSED;
+ *         400 INCOMPLETE_BALLOT / INVALID_MOTION / INVALID_OPTION.
+ */
+export function castBallot(ctx: ServiceContext, token: unknown, choices: Record<string, string>): void {
+  const tokenHash = isWellFormedToken(token) ? hashToken(token) : null;
+  if (tokenHash === null) throw invalidToken();
+
+  transaction(ctx.db, () => {
+    // Re-read inside the transaction: the state cannot change until COMMIT.
+    const voter = get<VoterRecord>(
+      ctx.db,
+      "SELECT id, election_id, name, weight, has_voted, token_expires_at FROM voters WHERE token_hash = ?",
+      tokenHash,
+    );
+    if (!voter) throw invalidToken();
+    if (voter.has_voted === 1) throw new AppError(403, "ALREADY_VOTED", "This link has already been used to vote.");
+    if (isExpired(voter.token_expires_at)) throw new AppError(403, "TOKEN_EXPIRED", "This voting link has expired.");
+
+    const election = get<{ status: string }>(ctx.db, "SELECT status FROM elections WHERE id = ?", voter.election_id);
+    if (!election) throw invalidToken();
+    if (election.status !== "open") throw new AppError(403, "ELECTION_CLOSED", "This election is closed.");
+
+    const motions = loadMotions(ctx, voter.election_id);
+    // The former single-motion links used the election id as motion id.
+    if (motions.length === 1 && choices[voter.election_id] !== undefined && choices[motions[0].id] === undefined) {
+      choices = { [motions[0].id]: choices[voter.election_id] };
     }
 
-    // 4. Load the motion and validate the chosen option.
-    const motions = await readMotions();
-    const motion = motions.find((candidate) => candidate.id === motionId);
-    if (!motion) {
-      throw new VotingServiceError(404, "MOTION_NOT_FOUND", "Motion not found.");
+    const known = new Set(motions.map((motion) => motion.id));
+    if (Object.keys(choices).some((motionId) => !known.has(motionId))) {
+      throw new AppError(400, "INVALID_MOTION", "The ballot contains a motion of another election.");
     }
-    if (!motion.options.includes(choice)) {
-      throw new VotingServiceError(400, "INVALID_OPTION", "Invalid voting option.");
+    const missing = motions.filter((motion) => choices[motion.id] === undefined);
+    if (missing.length > 0) {
+      throw new AppError(400, "INCOMPLETE_BALLOT", "A choice is required for every motion.", missing.map((motion) => ({
+        code: "MOTION_WITHOUT_CHOICE",
+        message: motion.title,
+        value: motion.id,
+      })));
     }
 
-    // 5. Weight and count the vote (weight comes from the voters CSV).
+    const selections = motions.map((motion) => {
+      const option = motion.options.find((candidate) => candidate.label === choices[motion.id]);
+      if (!option) throw new AppError(400, "INVALID_OPTION", "Invalid option for a motion.");
+      return { motionId: motion.id, optionId: option.id };
+    });
+
     const weight = Number(voter.weight);
-    if (!Number.isFinite(weight) || weight <= 0) {
-      throw new Error(`Voter ${voter.email} has an invalid weight.`);
-    }
-    motion.results[choice] = (motion.results[choice] ?? 0) + weight;
+    if (!Number.isFinite(weight) || weight <= 0) throw new Error(`Voter #${voter.id} has an invalid weight.`);
 
-    // 6. Burn the token first, then store the tally. If the tally cannot be saved,
-    //    restore the voters file so the voter is not locked out without a counted vote.
-    voter.hasVoted = true;
-    await writeJsonAtomic(VOTERS_FILE, VOTERS_TEMP_FILE, voters);
-    try {
-      await writeJsonAtomic(MOTIONS_FILE, MOTIONS_TEMP_FILE, motions);
-    } catch (error) {
-      await Deno.writeTextFile(VOTERS_FILE, votersRaw);
-      throw error;
+    // Burn the link first; zero changed rows means a concurrent request already voted.
+    const changed = run(
+      ctx.db,
+      "UPDATE voters SET has_voted = 1, voted_at = ? WHERE id = ? AND has_voted = 0",
+      new Date().toISOString(), voter.id,
+    );
+    if (changed !== 1) throw new AppError(403, "ALREADY_VOTED", "This link has already been used to vote.");
+
+    const insert = ctx.db.prepare(
+      "INSERT INTO ballots (id, motion_id, option_id, weight, source) VALUES (?, ?, ?, ?, 'vote')",
+    );
+    for (const selection of selections) {
+      insert.run(crypto.randomUUID(), selection.motionId, selection.optionId, weight);
     }
   });
 }

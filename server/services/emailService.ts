@@ -12,8 +12,8 @@
  * SMTP_PORT (587), SMTP_SECURE (true only on port 465 by default), SMTP_FROM (SMTP_USER).
  * Email copy is stored locally: no external translation API.
  */
-// @deno-types="npm:@types/nodemailer@6.4.17"
-import nodemailer from "npm:nodemailer@6.9.16";
+// @deno-types="@types/nodemailer"
+import nodemailer from "nodemailer";
 import type { Gender } from "./csvService.ts";
 
 export type EmailLanguage = "en" | "es";

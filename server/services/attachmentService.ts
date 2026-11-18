@@ -10,7 +10,7 @@
  *   which rules out path traversal and keeps personal data out of file names.
  * - Reads resolve names inside the uploads directory only.
  */
-import { join, resolve, SEPARATOR } from "jsr:@std/path@^1";
+import { join, resolve, SEPARATOR } from "@std/path";
 import { AppError } from "../errors.ts";
 
 export const MAX_ATTACHMENTS = 5;

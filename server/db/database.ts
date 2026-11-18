@@ -7,7 +7,7 @@
  * (hashing, file I/O, email) must happen before or after `transaction()`.
  */
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import { dirname } from "jsr:@std/path@^1";
+import { dirname } from "@std/path";
 import { applyMigrations } from "./schema.ts";
 
 export type Database = DatabaseSync;
