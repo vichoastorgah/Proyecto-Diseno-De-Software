@@ -132,3 +132,20 @@ Deno.test("hardening: a retried submission with the same requestId creates and m
     await env.cleanup();
   }
 });
+
+Deno.test("hardening: an invalid DATABASE_URL is reported without echoing its value", async () => {
+  const { assertConnectionString } = await import("../db/database.ts");
+  const secretish = "SuperSecretPassword123";
+  for (const value of [`${secretish}?sslmode=require`, `https://user:${secretish}@host/db`, "postgresql://user@host/db",
+    "postgresql://user:[YOUR-PASSWORD]@host:5432/postgres"]) {
+    let message = "";
+    try {
+      assertConnectionString(value);
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    assert(message.startsWith("DATABASE_URL is invalid"), `rejected: ${message}`);
+    assert(!message.includes(secretish), "the value must never appear in the error");
+  }
+  assertConnectionString("postgresql://postgres.ref:pass@aws-0-sa-east-1.pooler.supabase.com:5432/postgres?sslmode=require");
+});
