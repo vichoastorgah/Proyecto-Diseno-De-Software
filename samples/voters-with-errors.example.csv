@@ -1,0 +1,7 @@
+email,name,birthdate,gender,weight
+ana.garcia@example.com,Ana García,1990-04-12,female,1
+not-an-email,Bruno Díaz,1985-11-03,male,2
+carla.rojas@example.com,,2000-01-15,other,1.5
+diego.soto@example.com,Diego Soto,2099-07-30,male,3
+ana.garcia@example.com,Ana Duplicada,1990-04-12,female,1
+elena.munoz@example.com,Elena Muñoz,1995-09-21,unknown,0

@@ -3,14 +3,36 @@ node_modules/
 
 # Secrets and local configuration
 .env
+.env.*
+!.env.example
 client/.env
+client/.env.*
+!client/.env.example
+client_secret*.json
+
+# Local database (contains personal data: voters, surveys, answers)
+server/storage/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
 
 # Runtime data and temporary files
 server/uploads/
 *.tmp
 
+# Former JSON storage (personal data). Imported once into the local database,
+# kept on disk only, never versioned.
+server/voters.json
+server/motions.json
+server/data.json
+
+# Voter lists and other spreadsheets with personal data.
+# Only fictitious samples in samples/ are versioned.
+*.csv
+!samples/*.csv
+
 # Build output and logs
 client/dist/
 *.log
 .DS_Store
-client_secret*.json
