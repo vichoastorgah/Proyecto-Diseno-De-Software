@@ -9,7 +9,7 @@ Branch: `feature/professional-upgrade` (tracks `origin/feature/professional-upgr
 |---|---|
 | **Last completed** | PostgreSQL/Supabase-ready persistence + fixes from an independent code review, verified (41 tests, driver smoke test, browser) |
 | **In progress** | Documentation of the deployment (`docs/DESPLIEGUE.md`) |
-| **Next** | Owner creates Supabase / Deno Deploy / Vercel accounts and follows the guide; production checks |
+| **Next** | Owner merged into `main` and created Supabase; next: Render (API container) and Vercel, then production checks |
 | **Blocked / needs the owner** | Hosting accounts and secrets; real Google sign-in check; Git history decision |
 
 ## Commits on this branch (all pushed)
@@ -46,7 +46,7 @@ reserved `example.com` domain).
 | **Commit quality and traceability** | 10 | Conventional messages with bodies (why + verification) | Good (early commits less descriptive) | One concern per commit |
 | **Development management and validation** | 5 | 41 tests, ESLint, i18n check, build, browser checks, independent review with fixes and regression tests | Good | Keep tests green |
 | **Functional compliance** | 12 | Requirements matrix below; every flow works end to end locally | Done locally | Demonstrate live (README demo script) |
-| **Online deployment and integration** | 4 | Code ready for Vercel + Deno Deploy + Supabase; guide `docs/DESPLIEGUE.md` | **Not published** | Owner creates accounts, sets env vars, follows the guide |
+| **Online deployment and integration** | 4 | Code ready for Vercel + Render (Docker, tested locally) + Supabase; guide `docs/DESPLIEGUE.md` | **Not published** | Owner creates accounts, sets env vars, follows the guide |
 | **UI/UX good practices** | 3 | Tokens, hierarchy, spacing, components, loading/empty/error states, confirmations, feedback | Done | — |
 | **Responsive** | 2 | Verified 390/820/1440 px, no horizontal overflow | Done | — |
 | **i18n** | 3 | `t('key')`, `es.json`/`en.json` 411 keys each, `npm run check:i18n`, navbar switch, ES/EN emails | Done | Demonstrate the switch |
@@ -94,6 +94,9 @@ reserved `example.com` domain).
 7. **Roles:** admins from `ADMIN_*` (fallback `ALLOWED_*`); participants only see their surveys and, as participants,
    only global progress figures.
 8. **Idempotent creation** with a client `requestId`.
+10. **Hosting:** Deno Deploy closed new sign-ups (shutting down April 2027), so the API runs as a Docker container
+   (`Dockerfile`, image `denoland/deno:2.9.7`, non-root user, no client/data/secrets in the image) on Render.
+   Verified locally: injected `PORT`, health check, postgres driver over the network.
 9. **Frontend loading** (`useResource`) and modal effects follow the React 19 hooks rules.
 
 ---
@@ -149,12 +152,12 @@ reserved `example.com` domain).
   (`git filter-repo` + force push; changes every hash). Nothing has been done to the history.
 - **3 voting tokens** published in the history are still valid in the local data (owner decided to keep them).
   Production starts with an empty database, so they do not work there.
-- SMTP from Deno Deploy is unverified (see `docs/DESPLIEGUE.md`).
+- SMTP from Render (free plan) is unverified (see `docs/DESPLIEGUE.md`).
 - Rate limiting is in-memory per instance.
 
 ## Pending tasks
 
-- [ ] Owner: Supabase project, bucket, keys; Deno Deploy project; Vercel project; Google origin (see `docs/DESPLIEGUE.md`).
+- [ ] Owner: Supabase project, bucket, keys; Render web service (Docker); Vercel project; Google origin (see `docs/DESPLIEGUE.md`).
 - [ ] Production checklist (guide section 6), including simultaneous ballots against Supabase.
 - [ ] Owner: real Google sign-in; optionally SMTP.
 - [ ] Owner: decision about the Git history with personal data.

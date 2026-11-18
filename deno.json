@@ -26,12 +26,5 @@
   },
   "fmt": {
     "lineWidth": 120
-  },
-  "deploy": {
-    "install": "deno install --entrypoint server/server.ts",
-    "runtime": {
-      "type": "dynamic",
-      "entrypoint": "./server/server.ts"
-    }
   }
 }

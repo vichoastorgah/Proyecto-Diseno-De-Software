@@ -160,8 +160,8 @@ Client `.env`: `VITE_API_BASE_URL`, `VITE_GOOGLE_CLIENT_ID`.
 
 ## Deployment
 
-Target: frontend on **Vercel**, API on **Deno Deploy**, database and files on **Supabase** (PostgreSQL + private
-Storage bucket). Step-by-step guide (Spanish): [`docs/DESPLIEGUE.md`](docs/DESPLIEGUE.md). Status: code ready and
+Target: frontend on **Vercel**, API as a Docker container on **Render** (`Dockerfile`; Deno Deploy no longer accepts
+new accounts), database and files on **Supabase** (PostgreSQL + private Storage bucket). Step-by-step guide (Spanish): [`docs/DESPLIEGUE.md`](docs/DESPLIEGUE.md). Status: code ready and
 verified locally against PostgreSQL; publication pending the owner's accounts.
 
 ---
