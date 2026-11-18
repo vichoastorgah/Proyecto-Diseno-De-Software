@@ -38,10 +38,24 @@ export function createApp(deps: AppDeps): Application {
   app.use(async (ctx, next) => {
     try {
       await next();
+      // No route matched (404) or the method is not allowed (405, set by allowedMethods()).
+      const status = ctx.response.status;
+      if (ctx.response.body === undefined && (status === 404 || status === 405)) {
+        const notAllowed = status === 405;
+        ctx.response.status = status; // Explicit: setting a body would otherwise imply 200.
+        ctx.response.body = {
+          error: notAllowed ? "Method not allowed." : `No route for ${ctx.request.method} ${ctx.request.url.pathname}.`,
+          code: notAllowed ? "METHOD_NOT_ALLOWED" : "NOT_FOUND",
+        };
+      }
     } catch (error) {
       if (error instanceof AppError) {
         ctx.response.status = error.status;
         ctx.response.body = { error: error.message, code: error.code, ...(error.details ? { details: error.details } : {}) };
+      } else if ((error as { code?: unknown })?.code === "23505") {
+        // Unique violation that slipped past a pre-check because of a concurrent request.
+        ctx.response.status = 409;
+        ctx.response.body = { error: "The data changed meanwhile. Reload and try again.", code: "CONFLICT" };
       } else if (isHttpError(error)) {
         ctx.response.status = error.status;
         ctx.response.body = { error: error.expose ? error.message : "Request failed.", code: "HTTP_ERROR" };
@@ -102,9 +116,6 @@ export function createApp(deps: AppDeps): Application {
 
   app.use(router.routes());
   app.use(router.allowedMethods());
-  app.use((ctx) => {
-    throw new AppError(404, "NOT_FOUND", `No route for ${ctx.request.method} ${ctx.request.url.pathname}.`);
-  });
 
   return app;
 }

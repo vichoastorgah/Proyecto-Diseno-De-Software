@@ -15,10 +15,13 @@
     "jsr:@std/internal@^1.0.14": "1.0.14",
     "jsr:@std/media-types@1": "1.1.0",
     "jsr:@std/path@1": "1.1.6",
+    "npm:@electric-sql/pglite-socket@0.2.16": "0.2.16_@electric-sql+pglite@0.5.13_@electric-sql+pglite-age@0.0.14_@electric-sql+pglite-pg_hashids@0.0.14_@electric-sql+pglite-pg_ivm@0.0.14_@electric-sql+pglite-pg_textsearch@0.0.15_@electric-sql+pglite-pg_uuidv7@0.0.14_@electric-sql+pglite-pgtap@0.0.14_@electric-sql+pglite-pgvector@0.0.14",
+    "npm:@electric-sql/pglite@0.5.13": "0.5.13",
     "npm:@types/nodemailer@6.4.17": "6.4.17",
     "npm:jose@5.9.6": "5.9.6",
     "npm:nodemailer@6.9.16": "6.9.16",
-    "npm:path-to-regexp@^6.3.0": "6.3.0"
+    "npm:path-to-regexp@^6.3.0": "6.3.0",
+    "npm:postgres@3.4.9": "3.4.9"
   },
   "jsr": {
     "@oak/commons@1.0.1": {
@@ -82,6 +85,65 @@
     }
   },
   "npm": {
+    "@electric-sql/pglite-age@0.0.14_@electric-sql+pglite@0.5.13": {
+      "integrity": "sha512-k+LLV48ahkVJyMO8KHMiaHhaOpe5HRr4aWIQdU52SYY8qqqGuSFcAW0LjhsLo0MgpSANH5VPxWg4SlrbZwg2QA==",
+      "dependencies": [
+        "@electric-sql/pglite"
+      ]
+    },
+    "@electric-sql/pglite-pg_hashids@0.0.14_@electric-sql+pglite@0.5.13": {
+      "integrity": "sha512-X39XYyBfwPkqSyIFkzlc6SJAe6gCmNY6RgoeXQTbhfe7ilvm3EmgWy/TVUerzXzjkau/9OCTBm0Xwds228lpqA==",
+      "dependencies": [
+        "@electric-sql/pglite"
+      ]
+    },
+    "@electric-sql/pglite-pg_ivm@0.0.14_@electric-sql+pglite@0.5.13": {
+      "integrity": "sha512-nO8OcxOzpqSBkPUPo5KiUSIVkWnBZeQlQPAkhPO3fIR9LxrAqxrpyS4xriozGHFKWEafSNDYgbhU+yoobGfotQ==",
+      "dependencies": [
+        "@electric-sql/pglite"
+      ]
+    },
+    "@electric-sql/pglite-pg_textsearch@0.0.15_@electric-sql+pglite@0.5.13": {
+      "integrity": "sha512-4eqKoKJWyBEQQPZzb3BKc/sHuTCr5FH5XfBG6HALyNtIMEbieRbAn7ZHvY1f6Wo7iHZr7yxh4U1c0GfGmsEDxg==",
+      "dependencies": [
+        "@electric-sql/pglite"
+      ]
+    },
+    "@electric-sql/pglite-pg_uuidv7@0.0.14_@electric-sql+pglite@0.5.13": {
+      "integrity": "sha512-ct4fYIfei1LWvxVR3q2hFG4B/uR0+y1+ypfzqIs4Hxs2GzssQ2Rp5k1ttQY5fahmIN2WlENGMRH/htVP4Bh2lA==",
+      "dependencies": [
+        "@electric-sql/pglite"
+      ]
+    },
+    "@electric-sql/pglite-pgtap@0.0.14_@electric-sql+pglite@0.5.13": {
+      "integrity": "sha512-274bIXuxrQn+//3K6i5yLZRN6zv3qMQlLBgz7wye2+rFpzrECOM3bSeM4njYvzYb7usI4kB9ObbRIyJAAVBw/g==",
+      "dependencies": [
+        "@electric-sql/pglite"
+      ]
+    },
+    "@electric-sql/pglite-pgvector@0.0.14_@electric-sql+pglite@0.5.13": {
+      "integrity": "sha512-sJCsaVnuqo18CJyPV32pbVCDlhjV+iFCSlwOW7+kTkzIRJSWkju+LnQ9DlWpRR+S+V5m//LA+w4+Ne2afBQ0wg==",
+      "dependencies": [
+        "@electric-sql/pglite"
+      ]
+    },
+    "@electric-sql/pglite-socket@0.2.16_@electric-sql+pglite@0.5.13_@electric-sql+pglite-age@0.0.14_@electric-sql+pglite-pg_hashids@0.0.14_@electric-sql+pglite-pg_ivm@0.0.14_@electric-sql+pglite-pg_textsearch@0.0.15_@electric-sql+pglite-pg_uuidv7@0.0.14_@electric-sql+pglite-pgtap@0.0.14_@electric-sql+pglite-pgvector@0.0.14": {
+      "integrity": "sha512-G0Jy6/5Cw2N1IejYyo6zQdRAhU1W/ATSo0cZNH5hUCH9FyGXAKE3lcQTKWDdvAVdQbHBKaV2ZFuCjsh1h1Qjew==",
+      "dependencies": [
+        "@electric-sql/pglite",
+        "@electric-sql/pglite-age",
+        "@electric-sql/pglite-pg_hashids",
+        "@electric-sql/pglite-pg_ivm",
+        "@electric-sql/pglite-pg_textsearch",
+        "@electric-sql/pglite-pg_uuidv7",
+        "@electric-sql/pglite-pgtap",
+        "@electric-sql/pglite-pgvector"
+      ],
+      "bin": true
+    },
+    "@electric-sql/pglite@0.5.13": {
+      "integrity": "sha512-4rZuxK1k07w6sSpJzjMri0B9+HuXuC7V9pxVB51pR0T9KPqXg6TD0mdaEwBA9rkcL4jdht4tGDf/wYzAiGhT7g=="
+    },
     "@types/node@26.6.6": {
       "integrity": "sha512-MzQj+8Kx3XI40OmUAE6Qoh58ZMNstNNMwn2nfd3qWsfe7nDNSqJNzes4njhz6AHwrSHOffSLwXU6yb474Q4aog==",
       "dependencies": [
@@ -103,6 +165,9 @@
     "path-to-regexp@6.3.0": {
       "integrity": "sha512-Yhpw4T9C6hPpgPeA28us07OJeqZ5EzQTkbfwuhsUg0c237RomFoETJgmp2sa3F/41gfLE6G5cqcYwznmeEeOlQ=="
     },
+    "postgres@3.4.9": {
+      "integrity": "sha512-GD3qdB0x1z9xgFI6cdRD6xu2Sp2WCOEoe3mtnyB5Ee0XrrL5Pe+e4CCnJrRMnL1zYtRDZmQQVbvOttLnKDLnaw=="
+    },
     "undici-types@8.9.0": {
       "integrity": "sha512-KTDyRTYX8sWmKXAikPHHSyc63CRPETMctyjKFupcC6OBLXT3xsN0e9aF7m+mIXutFWpUXuedtowG7iLOzp0kQg=="
     }
@@ -113,9 +178,11 @@
       "jsr:@std/assert@1",
       "jsr:@std/dotenv@~0.225.8",
       "jsr:@std/path@1",
+      "npm:@electric-sql/pglite@0.5.13",
       "npm:@types/nodemailer@6.4.17",
       "npm:jose@5.9.6",
-      "npm:nodemailer@6.9.16"
+      "npm:nodemailer@6.9.16",
+      "npm:postgres@3.4.9"
     ]
   }
 }

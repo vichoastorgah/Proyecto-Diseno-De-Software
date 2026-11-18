@@ -6,13 +6,13 @@
  * - The link token must exist (looked up by its SHA-256 hash), not be expired, and its
  *   election must be open.
  * - One ballot per voter: the ballot covers every motion of the election and is stored
- *   atomically. `UPDATE ... WHERE has_voted = 0` guarantees that two concurrent requests
- *   with the same link cannot both succeed.
+ *   atomically. `UPDATE ... WHERE has_voted = false` locks the voter row, so two concurrent
+ *   requests with the same link cannot both succeed (the second one changes zero rows).
  * - The weight comes from the voter record (CSV), never from the request.
  * - Ballots are stored without any reference to the voter (secret vote).
  */
 import { AppError, notFound, validationError } from "../errors.ts";
-import { all, get, run, transaction } from "../db/database.ts";
+import type { Db } from "../db/database.ts";
 import type { ServiceContext } from "../context.ts";
 import { hashToken, isWellFormedToken } from "./tokenService.ts";
 import type { AttachmentSummary } from "./electionService.ts";
@@ -22,7 +22,7 @@ interface VoterRecord {
   election_id: string;
   name: string;
   weight: number;
-  has_voted: number;
+  has_voted: boolean;
   token_expires_at: string | null;
 }
 
@@ -32,6 +32,8 @@ export interface BallotContext {
   attachments: AttachmentSummary[];
   voter: { name: string; hasVoted: boolean; isExpired: boolean; tokenExpiresAt: string | null };
 }
+
+const VOTER_COLUMNS = "id, election_id, name, weight, has_voted, token_expires_at";
 
 function invalidToken(): AppError {
   return notFound("INVALID_TOKEN", "Invalid voting link.");
@@ -44,25 +46,20 @@ function isExpired(expiresAt: string | null, now = Date.now()): boolean {
   return Number.isNaN(time) || time <= now;
 }
 
-function findVoter(ctx: ServiceContext, token: unknown): VoterRecord {
+async function findVoter(db: Db, token: unknown): Promise<VoterRecord> {
   if (!isWellFormedToken(token)) throw invalidToken();
-  const voter = get<VoterRecord>(
-    ctx.db,
-    "SELECT id, election_id, name, weight, has_voted, token_expires_at FROM voters WHERE token_hash = ?",
-    hashToken(token),
-  );
+  const voter = await db.get<VoterRecord>(`SELECT ${VOTER_COLUMNS} FROM voters WHERE token_hash = $1`, hashToken(token));
   if (!voter) throw invalidToken();
   return voter;
 }
 
-function loadMotions(ctx: ServiceContext, electionId: string) {
-  const motions = all<{ id: string; title: string; description: string }>(
-    ctx.db, "SELECT id, title, description FROM motions WHERE election_id = ? ORDER BY position", electionId,
+async function loadMotions(db: Db, electionId: string) {
+  const motions = await db.all<{ id: string; title: string; description: string }>(
+    "SELECT id, title, description FROM motions WHERE election_id = $1 ORDER BY position", electionId,
   );
-  const options = all<{ motion_id: string; id: number; label: string }>(
-    ctx.db,
+  const options = await db.all<{ motion_id: string; id: number; label: string }>(
     `SELECT o.motion_id, o.id, o.label FROM motion_options o JOIN motions m ON m.id = o.motion_id
-     WHERE m.election_id = ? ORDER BY o.position`,
+     WHERE m.election_id = $1 ORDER BY o.position`,
     electionId,
   );
   return motions.map((motion) => ({
@@ -75,20 +72,20 @@ function loadMotions(ctx: ServiceContext, electionId: string) {
  * Returns what the ballot page needs for a link (no other voter, no weight, no results).
  * @throws {AppError} 404 INVALID_TOKEN.
  */
-export function getBallot(ctx: ServiceContext, token: unknown): BallotContext {
-  const voter = findVoter(ctx, token);
-  const election = get<{ id: string; title: string; description: string; status: "open" | "closed" }>(
-    ctx.db, "SELECT id, title, description, status FROM elections WHERE id = ?", voter.election_id,
+export async function getBallot(ctx: ServiceContext, token: unknown): Promise<BallotContext> {
+  const voter = await findVoter(ctx.db, token);
+  const election = await ctx.db.get<{ id: string; title: string; description: string; status: "open" | "closed" }>(
+    "SELECT id, title, description, status FROM elections WHERE id = $1", voter.election_id,
   );
   if (!election) throw invalidToken();
 
-  const attachments = all<{ id: string; original_name: string; mime_type: string; size: number }>(
-    ctx.db, "SELECT id, original_name, mime_type, size FROM attachments WHERE election_id = ? ORDER BY created_at, id", election.id,
-  ).map((row) => ({ id: row.id, name: row.original_name, mimeType: row.mime_type, size: Number(row.size) }));
+  const attachments = (await ctx.db.all<{ id: string; original_name: string; mime_type: string; size: number }>(
+    "SELECT id, original_name, mime_type, size FROM attachments WHERE election_id = $1 ORDER BY created_at, id", election.id,
+  )).map((row) => ({ id: row.id, name: row.original_name, mimeType: row.mime_type, size: Number(row.size) }));
 
   return {
     election,
-    motions: loadMotions(ctx, election.id).map((motion) => ({
+    motions: (await loadMotions(ctx.db, election.id)).map((motion) => ({
       id: motion.id,
       title: motion.title,
       description: motion.description,
@@ -97,7 +94,7 @@ export function getBallot(ctx: ServiceContext, token: unknown): BallotContext {
     attachments,
     voter: {
       name: voter.name,
-      hasVoted: voter.has_voted === 1,
+      hasVoted: voter.has_voted,
       isExpired: isExpired(voter.token_expires_at),
       tokenExpiresAt: voter.token_expires_at,
     },
@@ -105,8 +102,8 @@ export function getBallot(ctx: ServiceContext, token: unknown): BallotContext {
 }
 
 /** Returns the election an attachment download is allowed for (the link's election). */
-export function getElectionIdForToken(ctx: ServiceContext, token: unknown): string {
-  return findVoter(ctx, token).election_id;
+export async function getElectionIdForToken(ctx: ServiceContext, token: unknown): Promise<string> {
+  return (await findVoter(ctx.db, token)).election_id;
 }
 
 /**
@@ -134,36 +131,33 @@ export function readChoices(body: Record<string, unknown>): Record<string, strin
  * @throws {AppError} 404 INVALID_TOKEN; 403 ALREADY_VOTED / TOKEN_EXPIRED / ELECTION_CLOSED;
  *         400 INCOMPLETE_BALLOT / INVALID_MOTION / INVALID_OPTION.
  */
-export function castBallot(ctx: ServiceContext, token: unknown, choices: Record<string, string>): void {
-  const tokenHash = isWellFormedToken(token) ? hashToken(token) : null;
-  if (tokenHash === null) throw invalidToken();
+export async function castBallot(ctx: ServiceContext, token: unknown, choices: Record<string, string>): Promise<void> {
+  if (!isWellFormedToken(token)) throw invalidToken();
+  const tokenHash = hashToken(token);
 
-  transaction(ctx.db, () => {
-    // Re-read inside the transaction: the state cannot change until COMMIT.
-    const voter = get<VoterRecord>(
-      ctx.db,
-      "SELECT id, election_id, name, weight, has_voted, token_expires_at FROM voters WHERE token_hash = ?",
-      tokenHash,
-    );
+  await ctx.db.transaction(async (tx) => {
+    // FOR UPDATE: a concurrent ballot with the same link waits here until this one commits.
+    const voter = await tx.get<VoterRecord>(`SELECT ${VOTER_COLUMNS} FROM voters WHERE token_hash = $1 FOR UPDATE`, tokenHash);
     if (!voter) throw invalidToken();
-    if (voter.has_voted === 1) throw new AppError(403, "ALREADY_VOTED", "This link has already been used to vote.");
+    if (voter.has_voted) throw new AppError(403, "ALREADY_VOTED", "This link has already been used to vote.");
     if (isExpired(voter.token_expires_at)) throw new AppError(403, "TOKEN_EXPIRED", "This voting link has expired.");
 
-    const election = get<{ status: string }>(ctx.db, "SELECT status FROM elections WHERE id = ?", voter.election_id);
+    const election = await tx.get<{ status: string }>("SELECT status FROM elections WHERE id = $1", voter.election_id);
     if (!election) throw invalidToken();
     if (election.status !== "open") throw new AppError(403, "ELECTION_CLOSED", "This election is closed.");
 
-    const motions = loadMotions(ctx, voter.election_id);
+    const motions = await loadMotions(tx, voter.election_id);
     // The former single-motion links used the election id as motion id.
+    let effective = choices;
     if (motions.length === 1 && choices[voter.election_id] !== undefined && choices[motions[0].id] === undefined) {
-      choices = { [motions[0].id]: choices[voter.election_id] };
+      effective = { [motions[0].id]: choices[voter.election_id] };
     }
 
     const known = new Set(motions.map((motion) => motion.id));
-    if (Object.keys(choices).some((motionId) => !known.has(motionId))) {
+    if (Object.keys(effective).some((motionId) => !known.has(motionId))) {
       throw new AppError(400, "INVALID_MOTION", "The ballot contains a motion of another election.");
     }
-    const missing = motions.filter((motion) => choices[motion.id] === undefined);
+    const missing = motions.filter((motion) => effective[motion.id] === undefined);
     if (missing.length > 0) {
       throw new AppError(400, "INCOMPLETE_BALLOT", "A choice is required for every motion.", missing.map((motion) => ({
         code: "MOTION_WITHOUT_CHOICE",
@@ -173,27 +167,26 @@ export function castBallot(ctx: ServiceContext, token: unknown, choices: Record<
     }
 
     const selections = motions.map((motion) => {
-      const option = motion.options.find((candidate) => candidate.label === choices[motion.id]);
+      const option = motion.options.find((candidate) => candidate.label === effective[motion.id]);
       if (!option) throw new AppError(400, "INVALID_OPTION", "Invalid option for a motion.");
-      return { motionId: motion.id, optionId: option.id };
+      return { motionId: motion.id, optionId: Number(option.id) };
     });
 
     const weight = Number(voter.weight);
     if (!Number.isFinite(weight) || weight <= 0) throw new Error(`Voter #${voter.id} has an invalid weight.`);
 
-    // Burn the link first; zero changed rows means a concurrent request already voted.
-    const changed = run(
-      ctx.db,
-      "UPDATE voters SET has_voted = 1, voted_at = ? WHERE id = ? AND has_voted = 0",
+    // Burn the link first; zero changed rows means another request already voted.
+    const changed = await tx.run(
+      "UPDATE voters SET has_voted = true, voted_at = $1 WHERE id = $2 AND has_voted = false",
       new Date().toISOString(), voter.id,
     );
     if (changed !== 1) throw new AppError(403, "ALREADY_VOTED", "This link has already been used to vote.");
 
-    const insert = ctx.db.prepare(
-      "INSERT INTO ballots (id, motion_id, option_id, weight, source) VALUES (?, ?, ?, ?, 'vote')",
-    );
     for (const selection of selections) {
-      insert.run(crypto.randomUUID(), selection.motionId, selection.optionId, weight);
+      await tx.run(
+        "INSERT INTO ballots (id, motion_id, option_id, weight, source) VALUES ($1, $2, $3, $4, 'vote')",
+        crypto.randomUUID(), selection.motionId, selection.optionId, weight,
+      );
     }
   });
 }

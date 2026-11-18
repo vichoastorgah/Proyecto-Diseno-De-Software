@@ -43,7 +43,7 @@ async function resolveViewer(ctx: Context, deps: AppDeps): Promise<SurveyViewer>
 export function registerSurveyRoutes(router: Router, deps: AppDeps): void {
   router.get("/api/surveys", async (ctx) => {
     const viewer = await resolveViewer(ctx, deps);
-    ctx.response.body = { surveys: listSurveysForViewer(deps, viewer) };
+    ctx.response.body = { surveys: await listSurveysForViewer(deps, viewer) };
   });
 
   router.post("/api/surveys/categorize", async (ctx) => {
@@ -63,13 +63,13 @@ export function registerSurveyRoutes(router: Router, deps: AppDeps): void {
 
   router.get("/api/surveys/:id", async (ctx) => {
     const viewer = await resolveViewer(ctx, deps);
-    ctx.response.body = getSurveyForViewer(deps, ctx.params.id, viewer);
+    ctx.response.body = await getSurveyForViewer(deps.db, ctx.params.id, viewer);
   });
 
   router.post("/api/surveys/:id/questions/:questionId/answer", async (ctx) => {
     const viewer = await resolveViewer(ctx, deps);
     const body = await readJsonBody(ctx, 64 * 1024);
-    ctx.response.body = { survey: answerQuestion(deps, ctx.params.id, ctx.params.questionId, viewer, body.answer) };
+    ctx.response.body = { survey: await answerQuestion(deps, ctx.params.id, ctx.params.questionId, viewer, body.answer) };
   });
 
   router.post("/api/surveys/:id/delegate", async (ctx) => {

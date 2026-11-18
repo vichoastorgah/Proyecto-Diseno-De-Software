@@ -14,6 +14,7 @@
  */
 // @deno-types="@types/nodemailer"
 import nodemailer from "nodemailer";
+import { Buffer } from "node:buffer";
 import type { Gender } from "./csvService.ts";
 
 export type EmailLanguage = "en" | "es";
@@ -24,7 +25,8 @@ export interface OutgoingEmail {
   subject: string;
   text: string;
   html: string;
-  attachments: { filename: string; path: string }[];
+  /** Attachment bytes are loaded from the file store (works without a local disk). */
+  attachments: { filename: string; content: Uint8Array }[];
 }
 
 export interface Mailer {
@@ -48,7 +50,11 @@ function createSmtpMailer(env: Record<string, string | undefined>): Mailer {
   return {
     mode: "smtp",
     async send(email) {
-      await transporter.sendMail({ from, ...email });
+      await transporter.sendMail({
+        from,
+        ...email,
+        attachments: email.attachments.map((file) => ({ filename: file.filename, content: Buffer.from(file.content) })),
+      });
     },
   };
 }

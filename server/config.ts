@@ -12,10 +12,16 @@ export interface AppConfig {
   port: number;
   /** Origins allowed by CORS (exact match). */
   allowedOrigins: string[];
-  /** SQLite file. `:memory:` is accepted (tests). */
+  /** PostgreSQL connection string (Supabase). Empty -> embedded PGlite at `databasePath`. */
+  databaseUrl: string;
+  /** PGlite data folder (local development). `:memory:` is accepted (tests). */
   databasePath: string;
-  /** Directory where attachments are stored. */
+  /** Directory where attachments are stored when Supabase Storage is not configured. */
   uploadsDir: string;
+  /** Supabase Storage (production). All three are required to use it. */
+  supabaseUrl: string;
+  supabaseServiceKey: string;
+  supabaseBucket: string;
   /** Directory that may contain the legacy `voters.json`, `motions.json` and `data.json`. */
   legacyDataDir: string;
   googleClientId: string;
@@ -66,8 +72,12 @@ export function loadConfig(env: Env = Deno.env.toObject()): AppConfig {
   return {
     port: readPositiveNumber(env.PORT, 8000),
     allowedOrigins: origins.length > 0 ? origins : ["http://localhost:5173"],
-    databasePath: readPath(env.DATABASE_PATH, join(SERVER_DIR, "storage", "app.db")),
+    databaseUrl: env.DATABASE_URL ?? "",
+    databasePath: readPath(env.DATABASE_PATH, join(SERVER_DIR, "storage", "pgdata")),
     uploadsDir: readPath(env.UPLOADS_DIR, join(SERVER_DIR, "uploads")),
+    supabaseUrl: env.SUPABASE_URL ?? "",
+    supabaseServiceKey: env.SUPABASE_SERVICE_ROLE_KEY ?? "",
+    supabaseBucket: env.SUPABASE_BUCKET ?? "attachments",
     legacyDataDir: readPath(env.LEGACY_DATA_DIR, SERVER_DIR),
     googleClientId: env.GOOGLE_CLIENT_ID ?? "",
     sessionSecret: env.SESSION_SECRET ?? "",

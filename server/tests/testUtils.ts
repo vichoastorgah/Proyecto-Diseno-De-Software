@@ -5,7 +5,8 @@
  * All data below is fictitious (example.com addresses).
  */
 import type { AppConfig } from "../config.ts";
-import { openDatabase } from "../db/database.ts";
+import { type Db, openDatabase } from "../db/database.ts";
+import { createLocalFileStore, type FileStore } from "../services/fileStore.ts";
 import { createCapturingMailer } from "../services/emailService.ts";
 import { createAuthService, type GoogleTokenVerifier } from "../services/authService.ts";
 import { isSurveyParticipant } from "../services/surveyService.ts";
@@ -24,7 +25,8 @@ const fakeGoogle: GoogleTokenVerifier = (credential) => {
 
 export interface TestEnv {
   app: ReturnType<typeof createApp>;
-  db: ReturnType<typeof openDatabase>;
+  db: Db;
+  files: FileStore;
   mailer: ReturnType<typeof createCapturingMailer>;
   config: AppConfig;
   auth: ReturnType<typeof createAuthService>;
@@ -54,8 +56,12 @@ export async function createTestEnv(overrides: Partial<AppConfig> = {}, failFor:
   const config: AppConfig = {
     port: 0,
     allowedOrigins: ["http://localhost:5173"],
+    databaseUrl: "",
     databasePath: ":memory:",
     uploadsDir: `${tempDir}/uploads`,
+    supabaseUrl: "",
+    supabaseServiceKey: "",
+    supabaseBucket: "attachments",
     legacyDataDir: `${tempDir}/legacy`,
     googleClientId: "test-client-id",
     sessionSecret: SESSION_SECRET,
@@ -70,9 +76,10 @@ export async function createTestEnv(overrides: Partial<AppConfig> = {}, failFor:
     defaultEmailLanguage: "en",
     ...overrides,
   };
-  const db = openDatabase(config.databasePath);
+  const db = await openDatabase({ dataDir: config.databasePath });
+  const files = createLocalFileStore(config.uploadsDir);
   const mailer = createCapturingMailer(failFor);
-  const services = { db, config, mailer };
+  const services = { db, config, mailer, files };
   const auth = createAuthService({
     config,
     isSurveyParticipant: (email) => isSurveyParticipant(services, email),
@@ -112,6 +119,7 @@ export async function createTestEnv(overrides: Partial<AppConfig> = {}, failFor:
   return {
     app,
     db,
+    files,
     mailer,
     config,
     auth,
@@ -121,7 +129,7 @@ export async function createTestEnv(overrides: Partial<AppConfig> = {}, failFor:
       return (await auth.issueSession({ email, name: email }, ttlSeconds)).token;
     },
     async cleanup() {
-      db.close();
+      await db.close();
       await Deno.remove(tempDir, { recursive: true }).catch(() => {});
     },
   };

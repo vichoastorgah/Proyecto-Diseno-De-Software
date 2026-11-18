@@ -15,7 +15,7 @@
  * - anyone else: the survey does not exist (404).
  */
 import { AppError, notFound, validationError } from "../errors.ts";
-import { all, get, run, transaction } from "../db/database.ts";
+import type { Db } from "../db/database.ts";
 import type { ServiceContext } from "../context.ts";
 import { normalizeEmail } from "./csvService.ts";
 import { type EmailLanguage, renderSurveyNotice } from "./emailService.ts";
@@ -264,16 +264,24 @@ export function computeProgress(questions: readonly Pick<QuestionRow, "category"
 }
 
 /** True when the email is the recipient, an owner or a delegate of any survey. */
-export function isSurveyParticipant(ctx: ServiceContext, email: string): boolean {
+export async function isSurveyParticipant(ctx: ServiceContext, email: string): Promise<boolean> {
   const normalized = email.trim().toLowerCase();
-  return get(
-    ctx.db,
-    `SELECT 1 FROM surveys WHERE initial_recipient = ?1
-     UNION ALL SELECT 1 FROM survey_questions WHERE current_owner = ?1 OR original_assignee = ?1
-     UNION ALL SELECT 1 FROM survey_delegations WHERE to_email = ?1 OR from_email = ?1
+  const row = await ctx.db.get(
+    `SELECT 1 FROM surveys WHERE initial_recipient = $1
+     UNION ALL SELECT 1 FROM survey_questions WHERE current_owner = $1 OR original_assignee = $1
+     UNION ALL SELECT 1 FROM survey_delegations WHERE to_email = $1 OR from_email = $1
      LIMIT 1`,
     normalized,
-  ) !== undefined;
+  );
+  return row !== undefined;
+}
+
+/**
+ * Participants only get the global figures: the breakdown by category and by person
+ * describes questions they are not allowed to see.
+ */
+function withoutBreakdown(progress: SurveyProgress): SurveyProgress {
+  return { ...progress, byCategory: {}, pendingByOwner: {} };
 }
 
 /** Emails that handled a question (current owner, delegations, answer). */
@@ -291,20 +299,18 @@ function handlersOf(question: QuestionRow, history: DelegationEntry[]): Set<stri
  * Builds the survey as seen by `viewer`.
  * @throws {AppError} 404 SURVEY_NOT_FOUND when it does not exist or the viewer has no access.
  */
-export function getSurveyForViewer(ctx: ServiceContext, surveyId: string, viewer: SurveyViewer): SurveyView {
-  const survey = get<SurveyRow>(ctx.db, "SELECT id, title, initial_recipient, created_at FROM surveys WHERE id = ?", surveyId);
+export async function getSurveyForViewer(db: Db, surveyId: string, viewer: SurveyViewer): Promise<SurveyView> {
+  const survey = await db.get<SurveyRow>("SELECT id, title, initial_recipient, created_at FROM surveys WHERE id = $1", surveyId);
   if (!survey) throw notFound("SURVEY_NOT_FOUND", "Survey not found.");
 
-  const questions = all<QuestionRow>(
-    ctx.db,
+  const questions = await db.all<QuestionRow>(
     `SELECT id, code, category, text, original_assignee, current_owner, status, answer, answered_by, answered_at
-     FROM survey_questions WHERE survey_id = ? ORDER BY position`,
+     FROM survey_questions WHERE survey_id = $1 ORDER BY position`,
     surveyId,
   );
-  const historyRows = all<{ question_id: string; from_email: string; to_email: string; delegated_at: string }>(
-    ctx.db,
+  const historyRows = await db.all<{ question_id: string; from_email: string; to_email: string; delegated_at: string }>(
     `SELECT d.question_id, d.from_email, d.to_email, d.delegated_at FROM survey_delegations d
-     JOIN survey_questions q ON q.id = d.question_id WHERE q.survey_id = ? ORDER BY d.id`,
+     JOIN survey_questions q ON q.id = d.question_id WHERE q.survey_id = $1 ORDER BY d.id`,
     surveyId,
   );
   const history = new Map<string, DelegationEntry[]>();
@@ -333,7 +339,7 @@ export function getSurveyForViewer(ctx: ServiceContext, surveyId: string, viewer
     createdAt: survey.created_at,
     viewerEmail: email,
     viewerRole: role,
-    progress: computeProgress(questions),
+    progress: role === "participant" ? withoutBreakdown(computeProgress(questions)) : computeProgress(questions),
     questions: visible.map(({ question, history }) => ({
       id: question.id,
       code: question.code,
@@ -352,25 +358,24 @@ export function getSurveyForViewer(ctx: ServiceContext, surveyId: string, viewer
 }
 
 /** Surveys visible to the viewer (all of them for admins), newest first. */
-export function listSurveysForViewer(ctx: ServiceContext, viewer: SurveyViewer): SurveyListItem[] {
+export async function listSurveysForViewer(ctx: ServiceContext, viewer: SurveyViewer): Promise<SurveyListItem[]> {
   const email = viewer.email.toLowerCase();
-  const rows = all<SurveyRow & { total: number; answered: number; mine: number }>(
-    ctx.db,
+  const rows = await ctx.db.all<SurveyRow & { total: number; answered: number; mine: number }>(
     `SELECT s.id, s.title, s.initial_recipient, s.created_at,
             COUNT(q.id) AS total,
-            COALESCE(SUM(q.status = 'answered'), 0) AS answered,
-            COALESCE(SUM(q.status = 'pending' AND q.current_owner = ?1), 0) AS mine
+            COUNT(q.id) FILTER (WHERE q.status = 'answered') AS answered,
+            COUNT(q.id) FILTER (WHERE q.status = 'pending' AND q.current_owner = $1) AS mine
      FROM surveys s LEFT JOIN survey_questions q ON q.survey_id = s.id
-     WHERE ?2 = 1
-        OR s.initial_recipient = ?1
+     WHERE $2
+        OR s.initial_recipient = $1
         OR EXISTS (SELECT 1 FROM survey_questions x WHERE x.survey_id = s.id
-                   AND (x.current_owner = ?1 OR x.original_assignee = ?1 OR x.answered_by = ?1))
+                   AND (x.current_owner = $1 OR x.original_assignee = $1 OR x.answered_by = $1))
         OR EXISTS (SELECT 1 FROM survey_delegations d JOIN survey_questions y ON y.id = d.question_id
-                   WHERE y.survey_id = s.id AND (d.to_email = ?1 OR d.from_email = ?1))
+                   WHERE y.survey_id = s.id AND (d.to_email = $1 OR d.from_email = $1))
      GROUP BY s.id
      ORDER BY s.created_at DESC`,
     email,
-    viewer.isAdmin ? 1 : 0,
+    viewer.isAdmin,
   );
   return rows.map((row) => ({
     id: row.id,
@@ -446,39 +451,36 @@ export async function createSurvey(
 
   const surveyId = crypto.randomUUID();
   const now = new Date().toISOString();
-  transaction(ctx.db, () => {
-    run(
-      ctx.db,
-      "INSERT INTO surveys (id, title, initial_recipient, created_by, created_at) VALUES (?, ?, ?, ?, ?)",
+  await ctx.db.transaction(async (tx) => {
+    await tx.run(
+      "INSERT INTO surveys (id, title, initial_recipient, created_by, created_at) VALUES ($1, $2, $3, $4, $5)",
       surveyId, title, recipient, actorEmail, now,
     );
-    const insert = ctx.db.prepare(
-      `INSERT INTO survey_questions (id, survey_id, position, code, category, text, original_assignee, current_owner, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
-    );
-    texts.forEach((text, index) => {
-      insert.run(
+    for (const [index, text] of texts.entries()) {
+      await tx.run(
+        `INSERT INTO survey_questions (id, survey_id, position, code, category, text, original_assignee, current_owner, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending')`,
         crypto.randomUUID(), surveyId, index + 1, `q-${String(index + 1).padStart(3, "0")}`,
         categorizeQuestion(text), text, recipient, recipient,
       );
-    });
+    }
   });
 
   const notified = await notify(ctx, recipient, surveyId, title, texts.length, "initial", language);
-  return { survey: getSurveyForViewer(ctx, surveyId, { email: actorEmail, isAdmin: true }), notified };
+  return { survey: await getSurveyForViewer(ctx.db, surveyId, { email: actorEmail, isAdmin: true }), notified };
 }
 
 /**
  * Saves the answer of a question. Only its current owner can answer, once.
  * @throws {AppError} 400, 403 NOT_QUESTION_OWNER, 404, 409 QUESTION_ALREADY_ANSWERED.
  */
-export function answerQuestion(
+export async function answerQuestion(
   ctx: ServiceContext,
   surveyId: string,
   questionId: string,
   viewer: SurveyViewer,
   answerText: unknown,
-): SurveyView {
+): Promise<SurveyView> {
   const email = viewer.email.toLowerCase();
   const text = typeof answerText === "string" ? answerText.trim() : "";
   if (text === "") throw validationError("The answer cannot be empty.", [{ code: "ANSWER_EMPTY", message: "answer" }]);
@@ -488,23 +490,23 @@ export function answerQuestion(
     ]);
   }
 
-  transaction(ctx.db, () => {
-    const question = get<{ current_owner: string; status: string }>(
-      ctx.db, "SELECT current_owner, status FROM survey_questions WHERE id = ? AND survey_id = ?", questionId, surveyId,
+  await ctx.db.transaction(async (tx) => {
+    const question = await tx.get<{ current_owner: string; status: string }>(
+      "SELECT current_owner, status FROM survey_questions WHERE id = $1 AND survey_id = $2 FOR UPDATE", questionId, surveyId,
     );
     if (!question) throw notFound("QUESTION_NOT_FOUND", "Question not found.");
     if (question.status === "answered") throw new AppError(409, "QUESTION_ALREADY_ANSWERED", "This question has already been answered.");
     if (question.current_owner !== email) {
       throw new AppError(403, "NOT_QUESTION_OWNER", "Only the person responsible for this question can answer it.");
     }
-    run(
-      ctx.db,
-      `UPDATE survey_questions SET status = 'answered', answer = ?, answered_by = ?, answered_at = ?
-       WHERE id = ? AND current_owner = ? AND status = 'pending'`,
-      text, email, new Date().toISOString(), questionId, email,
+    const changed = await tx.run(
+      `UPDATE survey_questions SET status = 'answered', answer = $1, answered_by = $2, answered_at = $3
+       WHERE id = $4 AND current_owner = $2 AND status = 'pending'`,
+      text, email, new Date().toISOString(), questionId,
     );
+    if (changed !== 1) throw new AppError(409, "CONFLICT", "The question changed meanwhile. Reload and try again.");
   });
-  return getSurveyForViewer(ctx, surveyId, viewer);
+  return await getSurveyForViewer(ctx.db, surveyId, viewer);
 }
 
 export interface DelegateInput {
@@ -538,20 +540,21 @@ export async function delegateQuestions(
     throw validationError("Provide either questionIds or category.", [{ code: "DELEGATION_TARGET_REQUIRED", message: "target" }]);
   }
 
-  const survey = get<SurveyRow>(ctx.db, "SELECT id, title, initial_recipient, created_at FROM surveys WHERE id = ?", surveyId);
+  const survey = await ctx.db.get<SurveyRow>("SELECT id, title, initial_recipient, created_at FROM surveys WHERE id = $1", surveyId);
   if (!survey) throw notFound("SURVEY_NOT_FOUND", "Survey not found.");
 
-  const transferred = transaction(ctx.db, () => {
-    let targets: { id: string; current_owner: string; status: string }[];
+  type Target = { id: string; current_owner: string; status: string };
+  const transferred = await ctx.db.transaction(async (tx) => {
+    let targets: Target[];
     if (ids.length > 0) {
-      const unique = [...new Set(ids)];
-      targets = unique.map((id) => {
-        const question = get<{ id: string; current_owner: string; status: string }>(
-          ctx.db, "SELECT id, current_owner, status FROM survey_questions WHERE id = ? AND survey_id = ?", id, surveyId,
+      targets = [];
+      for (const id of new Set(ids)) {
+        const question = await tx.get<Target>(
+          "SELECT id, current_owner, status FROM survey_questions WHERE id = $1 AND survey_id = $2 FOR UPDATE", id, surveyId,
         );
         if (!question) throw notFound("QUESTION_NOT_FOUND", "Question not found.");
-        return question;
-      });
+        targets.push(question);
+      }
       if (targets.some((question) => question.status === "answered")) {
         throw new AppError(409, "QUESTION_ALREADY_ANSWERED", "Answered questions cannot be delegated.");
       }
@@ -559,8 +562,8 @@ export async function delegateQuestions(
         throw new AppError(403, "NOT_QUESTION_OWNER", "Only the person responsible for a question can delegate it.");
       }
     } else {
-      const inCategory = all<{ id: string; current_owner: string; status: string }>(
-        ctx.db, "SELECT id, current_owner, status FROM survey_questions WHERE survey_id = ? AND category = ? ORDER BY position",
+      const inCategory = await tx.all<Target>(
+        "SELECT id, current_owner, status FROM survey_questions WHERE survey_id = $1 AND category = $2 ORDER BY position FOR UPDATE",
         surveyId, category,
       );
       if (inCategory.length === 0) throw notFound("CATEGORY_NOT_FOUND", "Category not found.");
@@ -572,15 +575,13 @@ export async function delegateQuestions(
 
     const now = new Date().toISOString();
     for (const question of targets) {
-      const changed = run(
-        ctx.db,
-        "UPDATE survey_questions SET current_owner = ? WHERE id = ? AND current_owner = ? AND status = 'pending'",
+      const changed = await tx.run(
+        "UPDATE survey_questions SET current_owner = $1 WHERE id = $2 AND current_owner = $3 AND status = 'pending'",
         newOwner, question.id, actor,
       );
       if (changed !== 1) throw new AppError(409, "CONFLICT", "The question changed meanwhile. Reload and try again.");
-      run(
-        ctx.db,
-        "INSERT INTO survey_delegations (question_id, from_email, to_email, delegated_at) VALUES (?, ?, ?, ?)",
+      await tx.run(
+        "INSERT INTO survey_delegations (question_id, from_email, to_email, delegated_at) VALUES ($1, $2, $3, $4)",
         question.id, actor, newOwner, now,
       );
     }
@@ -588,5 +589,5 @@ export async function delegateQuestions(
   });
 
   const notified = await notify(ctx, newOwner, surveyId, survey.title, transferred.length, "delegated", language, actor);
-  return { survey: getSurveyForViewer(ctx, surveyId, viewer), transferredQuestionIds: transferred, notified };
+  return { survey: await getSurveyForViewer(ctx.db, surveyId, viewer), transferredQuestionIds: transferred, notified };
 }

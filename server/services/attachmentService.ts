@@ -6,11 +6,9 @@
  * - Allow-list of document/image extensions (anything else is rejected).
  * - Content sniffing: the first bytes must match the extension (a renamed executable
  *   is rejected), plain-text formats must not contain NUL bytes.
- * - Files are stored as `<uuid>.<ext>`: no user-controlled text reaches the file system,
- *   which rules out path traversal and keeps personal data out of file names.
- * - Reads resolve names inside the uploads directory only.
+ * - Files are stored as `<uuid>.<ext>` (see fileStore.ts): no user-controlled text reaches
+ *   the storage, which rules out path traversal and keeps personal data out of file names.
  */
-import { join, resolve, SEPARATOR } from "@std/path";
 import { AppError } from "../errors.ts";
 
 export const MAX_ATTACHMENTS = 5;
@@ -120,36 +118,4 @@ export async function prepareAttachments(files: readonly File[]): Promise<Prepar
     prepared.push({ originalName, extension, mimeType: type.mime, bytes });
   }
   return prepared;
-}
-
-/** Writes a prepared attachment and returns the generated stored name. */
-export async function writeAttachment(uploadsDir: string, attachment: PreparedAttachment): Promise<string> {
-  await Deno.mkdir(uploadsDir, { recursive: true });
-  const storedName = `${crypto.randomUUID()}${attachment.extension}`;
-  await Deno.writeFile(join(uploadsDir, storedName), attachment.bytes, { createNew: true });
-  return storedName;
-}
-
-/**
- * Resolves a stored name to an absolute path inside `uploadsDir`.
- * @returns The path, or null when the name is unsafe.
- */
-export function resolveStoredPath(uploadsDir: string, storedName: string): string | null {
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,250}$/.test(storedName) || storedName.includes("..")) return null;
-  const root = resolve(uploadsDir);
-  const path = resolve(root, storedName);
-  return path.startsWith(root + SEPARATOR) ? path : null;
-}
-
-/** Deletes files, ignoring the ones that do not exist (used to roll back failed writes). */
-export async function removeStoredFiles(uploadsDir: string, storedNames: readonly string[]): Promise<void> {
-  for (const name of storedNames) {
-    const path = resolveStoredPath(uploadsDir, name);
-    if (!path) continue;
-    try {
-      await Deno.remove(path);
-    } catch {
-      // Already gone.
-    }
-  }
 }

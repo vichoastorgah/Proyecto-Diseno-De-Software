@@ -25,17 +25,50 @@ function declaredLength(ctx: Context): number | null {
   return Number.isFinite(value) && value >= 0 ? value : null;
 }
 
-/** Reads a JSON object body. */
-export async function readJsonBody(ctx: Context, maxBytes = DEFAULT_JSON_LIMIT): Promise<Record<string, unknown>> {
+function tooLarge(): AppError {
+  return new AppError(413, "PAYLOAD_TOO_LARGE", "Payload too large.");
+}
+
+/**
+ * Reads the body as text, never buffering more than `maxBytes`: the stream is consumed
+ * chunk by chunk and cancelled as soon as the limit is exceeded (chunked uploads without
+ * Content-Length cannot exhaust memory).
+ */
+export async function readLimitedText(ctx: Context, maxBytes: number): Promise<string> {
   const length = declaredLength(ctx);
-  if (length !== null && length > maxBytes) throw new AppError(413, "PAYLOAD_TOO_LARGE", "Payload too large.");
-  let text: string;
+  if (length !== null && length > maxBytes) throw tooLarge();
+  const stream = ctx.request.body.stream;
+  if (!stream) return "";
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
   try {
-    text = await ctx.request.body.text();
-  } catch {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel();
+        throw tooLarge();
+      }
+      chunks.push(value);
+    }
+  } catch (error) {
+    if (error instanceof AppError) throw error;
     throw new AppError(400, "INVALID_BODY", "Unable to read the request body.");
   }
-  if (text.length > maxBytes) throw new AppError(413, "PAYLOAD_TOO_LARGE", "Payload too large.");
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
+}
+
+/** Reads a JSON object body (size-limited). */
+export async function readJsonBody(ctx: Context, maxBytes = DEFAULT_JSON_LIMIT): Promise<Record<string, unknown>> {
+  const text = await readLimitedText(ctx, maxBytes);
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -56,7 +89,7 @@ export async function readFormData(ctx: Context, maxBytes: number): Promise<Form
   }
   const length = declaredLength(ctx);
   if (length === null) throw new AppError(411, "LENGTH_REQUIRED", "Content-Length is required.");
-  if (length > maxBytes) throw new AppError(413, "PAYLOAD_TOO_LARGE", "Payload too large.");
+  if (length > maxBytes) throw tooLarge();
   try {
     return await ctx.request.body.formData();
   } catch {
@@ -94,14 +127,8 @@ export function emailLanguage(deps: AppDeps, value: unknown): EmailLanguage {
   return value === "es" || value === "en" ? value : deps.config.defaultEmailLanguage;
 }
 
-/** Sends a stored file as a download (type derived from the extension, never sniffed). */
-export async function sendDownload(ctx: Context, path: string, name: string, mimeType: string): Promise<void> {
-  let bytes: Uint8Array;
-  try {
-    bytes = await Deno.readFile(path);
-  } catch {
-    throw new AppError(404, "ATTACHMENT_NOT_FOUND", "Attachment not found.");
-  }
+/** Sends file bytes as a download (type derived from the extension, never sniffed). */
+export function sendDownload(ctx: Context, bytes: Uint8Array, name: string, mimeType: string): void {
   const asciiName = name.replace(/[^\x20-\x7E]/g, "_").replace(/["\\]/g, "_");
   ctx.response.headers.set("Content-Type", mimeType);
   ctx.response.headers.set(

@@ -1,70 +1,150 @@
 /**
  * @module db/database
- * SQLite access through Deno's built-in `node:sqlite` module (no extra dependency).
+ * PostgreSQL access behind a small async interface, with two interchangeable drivers:
  *
- * The driver is synchronous. A transaction body is a synchronous function, so no other
- * request can interleave between BEGIN and COMMIT on this single connection: async work
- * (hashing, file I/O, email) must happen before or after `transaction()`.
+ * - **postgres.js** when `DATABASE_URL` is set (production: Supabase Postgres).
+ * - **PGlite** otherwise (local development and tests): a real PostgreSQL compiled to
+ *   WebAssembly that runs inside the Deno process, persisted in a folder or in memory.
+ *
+ * Both speak the same SQL dialect, so the tests exercise exactly the queries used in
+ * production. Values are normalized the same way by both drivers: BIGINT -> number,
+ * TIMESTAMPTZ -> ISO-8601 string, DATE -> "YYYY-MM-DD".
+ *
+ * Concurrency: every multi-statement change runs in `transaction()`. Row-level guards such
+ * as `UPDATE ... WHERE has_voted = false` make concurrent requests safe (Postgres locks the
+ * row; the losing transaction sees zero changed rows).
  */
-import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import { dirname } from "@std/path";
+import type { PGlite } from "@electric-sql/pglite";
+import postgres from "postgres";
 import { applyMigrations } from "./schema.ts";
 
-export type Database = DatabaseSync;
-export type SqlValue = SQLInputValue;
+export type SqlValue = string | number | boolean | null;
 export type Row = Record<string, unknown>;
 
-/** Opens (and creates if needed) the database, enables constraints and applies migrations. */
-export function openDatabase(path: string): Database {
-  if (path !== ":memory:") Deno.mkdirSync(dirname(path), { recursive: true });
-  const db = new DatabaseSync(path);
-  db.exec("PRAGMA foreign_keys = ON;");
-  db.exec("PRAGMA busy_timeout = 5000;");
-  if (path !== ":memory:") {
-    db.exec("PRAGMA journal_mode = WAL;");
-    db.exec("PRAGMA synchronous = NORMAL;");
-  }
-  applyMigrations(db);
+export interface Db {
+  /** Every row of a query. Placeholders are `$1, $2, ...`. */
+  all<T = Row>(sql: string, ...params: SqlValue[]): Promise<T[]>;
+  /** First row of a query, or undefined. */
+  get<T = Row>(sql: string, ...params: SqlValue[]): Promise<T | undefined>;
+  /** Executes a statement and returns the number of affected rows. */
+  run(sql: string, ...params: SqlValue[]): Promise<number>;
+  /** Executes one or more statements without parameters (migrations). */
+  exec(sql: string): Promise<void>;
+  /** Runs `work` in a transaction (commit on success, rollback on error). Nested calls join the outer one. */
+  transaction<T>(work: (tx: Db) => Promise<T>): Promise<T>;
+  close(): Promise<void>;
+  readonly driver: "pglite" | "postgres";
+}
+
+const toIso = (value: unknown): string => new Date(value as string).toISOString();
+
+// ---------- PGlite ----------
+
+type PGliteLike = Pick<PGlite, "query" | "exec">;
+
+function wrapPglite(client: PGliteLike, root: PGlite, inTransaction: boolean): Db {
+  const db: Db = {
+    driver: "pglite",
+    async all<T>(sql: string, ...params: SqlValue[]) {
+      return (await client.query<T>(sql, params)).rows;
+    },
+    async get<T>(sql: string, ...params: SqlValue[]) {
+      return (await client.query<T>(sql, params)).rows[0];
+    },
+    async run(sql: string, ...params: SqlValue[]) {
+      return (await client.query(sql, params)).affectedRows ?? 0;
+    },
+    async exec(sql: string) {
+      await client.exec(sql);
+    },
+    transaction<T>(work: (tx: Db) => Promise<T>) {
+      if (inTransaction) return work(db);
+      return root.transaction((tx) => work(wrapPglite(tx, root, true)));
+    },
+    async close() {
+      if (!inTransaction) await root.close();
+    },
+  };
   return db;
 }
 
-const activeTransactions = new WeakSet<Database>();
-
-/**
- * Runs `work` inside `BEGIN IMMEDIATE ... COMMIT`, rolling back on any error.
- * Nested calls join the outer transaction.
- */
-export function transaction<T>(db: Database, work: () => T): T {
-  if (activeTransactions.has(db)) return work();
-
-  db.exec("BEGIN IMMEDIATE");
-  activeTransactions.add(db);
-  try {
-    const result = work();
-    if (result instanceof Promise) {
-      throw new Error("transaction() bodies must be synchronous.");
-    }
-    db.exec("COMMIT");
-    return result;
-  } catch (error) {
-    db.exec("ROLLBACK");
-    throw error;
-  } finally {
-    activeTransactions.delete(db);
-  }
+async function openPglite(dataDir: string | undefined): Promise<Db> {
+  // Loaded on demand: production (DATABASE_URL) never pays for the WebAssembly engine.
+  const { PGlite, types: pgliteTypes } = await import("@electric-sql/pglite");
+  if (dataDir) await Deno.mkdir(dataDir, { recursive: true });
+  const options = {
+    parsers: {
+      [pgliteTypes.INT8]: (value: string) => Number(value),
+      [pgliteTypes.TIMESTAMPTZ]: toIso,
+      [pgliteTypes.TIMESTAMP]: toIso,
+      [pgliteTypes.DATE]: (value: string) => value,
+    },
+  };
+  const pg = dataDir ? new PGlite(dataDir, options) : new PGlite(options);
+  await pg.waitReady;
+  return wrapPglite(pg, pg, false);
 }
 
-/** Returns every row of a query. */
-export function all<T = Row>(db: Database, sql: string, ...params: SqlValue[]): T[] {
-  return db.prepare(sql).all(...params) as T[];
+// ---------- postgres.js (Supabase) ----------
+
+type PostgresClient = ReturnType<typeof postgres>;
+type PostgresTx = postgres.TransactionSql;
+
+function wrapPostgres(client: PostgresClient | PostgresTx, root: PostgresClient, inTransaction: boolean): Db {
+  const db: Db = {
+    driver: "postgres",
+    async all<T>(sql: string, ...params: SqlValue[]) {
+      return [...await client.unsafe(sql, params as postgres.ParameterOrJSON<never>[])] as T[];
+    },
+    async get<T>(sql: string, ...params: SqlValue[]) {
+      return (await client.unsafe(sql, params as postgres.ParameterOrJSON<never>[]))[0] as T | undefined;
+    },
+    async run(sql: string, ...params: SqlValue[]) {
+      return (await client.unsafe(sql, params as postgres.ParameterOrJSON<never>[])).count;
+    },
+    async exec(sql: string) {
+      await client.unsafe(sql);
+    },
+    async transaction<T>(work: (tx: Db) => Promise<T>) {
+      if (inTransaction) return work(db);
+      return await root.begin((tx) => work(wrapPostgres(tx, root, true))) as T;
+    },
+    async close() {
+      if (!inTransaction) await root.end({ timeout: 5 });
+    },
+  };
+  return db;
 }
 
-/** Returns the first row of a query, or undefined. */
-export function get<T = Row>(db: Database, sql: string, ...params: SqlValue[]): T | undefined {
-  return db.prepare(sql).get(...params) as T | undefined;
+function openPostgres(url: string): Db {
+  const client = postgres(url, {
+    max: 5,
+    // Supabase's transaction pooler (port 6543) does not support prepared statements.
+    prepare: false,
+    onnotice: () => {},
+    types: {
+      bigint: { to: 20, from: [20], serialize: (value: number) => String(value), parse: (value: string) => Number(value) },
+      timestamp: { to: 1184, from: [1114, 1184], serialize: (value: string) => value, parse: toIso },
+      date: { to: 1082, from: [1082], serialize: (value: string) => value, parse: (value: string) => value },
+    },
+  });
+  return wrapPostgres(client, client, false);
 }
 
-/** Executes a statement and returns the number of changed rows. */
-export function run(db: Database, sql: string, ...params: SqlValue[]): number {
-  return Number(db.prepare(sql).run(...params).changes);
+// ---------- Entry point ----------
+
+export interface DatabaseOptions {
+  /** PostgreSQL connection string (Supabase). When set, PGlite is not used. */
+  url?: string;
+  /** PGlite data folder, or ":memory:". */
+  dataDir?: string;
+}
+
+/** Opens the database and applies pending migrations. */
+export async function openDatabase(options: DatabaseOptions): Promise<Db> {
+  const db = options.url
+    ? openPostgres(options.url)
+    : await openPglite(options.dataDir && options.dataDir !== ":memory:" ? options.dataDir : undefined);
+  await applyMigrations(db);
+  return db;
 }

@@ -15,21 +15,21 @@ import { mimeTypeFor } from "../services/attachmentService.ts";
 import { type AppDeps, readJsonBody, sendDownload } from "./helpers.ts";
 
 export function registerVotingRoutes(router: Router, deps: AppDeps): void {
-  router.get("/api/vote/context", (ctx) => {
+  router.get("/api/vote/context", async (ctx) => {
     const token = ctx.request.url.searchParams.get("token");
     if (!token) throw new AppError(400, "INVALID_TOKEN", "Missing query parameter: token.");
-    ctx.response.body = getBallot(deps, token);
+    ctx.response.body = await getBallot(deps, token);
   });
 
   router.post("/api/vote", async (ctx) => {
     const body = await readJsonBody(ctx, 64 * 1024);
-    castBallot(deps, body.token, readChoices(body));
+    await castBallot(deps, body.token, readChoices(body));
     ctx.response.body = { message: "Vote successfully registered." };
   });
 
   router.get("/api/vote/attachments/:attachmentId", async (ctx) => {
-    const electionId = getElectionIdForToken(deps, ctx.request.url.searchParams.get("token"));
-    const file = getAttachmentFile(deps, electionId, ctx.params.attachmentId);
-    await sendDownload(ctx, file.path, file.name, mimeTypeFor(file.name));
+    const electionId = await getElectionIdForToken(deps, ctx.request.url.searchParams.get("token"));
+    const file = await getAttachmentFile(deps, electionId, ctx.params.attachmentId);
+    sendDownload(ctx, file.bytes, file.name, mimeTypeFor(file.name));
   });
 }

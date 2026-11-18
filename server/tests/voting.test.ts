@@ -1,5 +1,4 @@
 import { assert, assertEquals } from "@std/assert";
-import { all, run } from "../db/database.ts";
 import { ADMIN, createTestEnv, electionForm, type TestEnv, tokenFromEmail } from "./testUtils.ts";
 
 interface Ballot {
@@ -50,7 +49,15 @@ Deno.test("voting: ballot context, weighted results and integrity", async () => 
       assertEquals(response.status, 200);
     }
 
+    // Secret ballot: no tallies while the election is open.
+    const open = await env.request("GET", `/api/admin/elections/${electionId}`, { token: adminToken });
+    assertEquals(open.body.resultsAvailable, false);
+    assert((open.body.motions as MotionResult[]).every((motion) => motion.options.every((option) => option.weight === null)));
+    assertEquals((open.body.motions as MotionResult[])[0].integrity.ok, true);
+
+    await env.request("POST", `/api/admin/elections/${electionId}/status`, { token: adminToken, json: { status: "closed" } });
     const detail = await env.request("GET", `/api/admin/elections/${electionId}`, { token: adminToken });
+    assertEquals(detail.body.resultsAvailable, true);
     const [budget, board] = detail.body.motions as MotionResult[];
     const weights = (motion: MotionResult) => Object.fromEntries(motion.options.map((option) => [option.label, option.weight]));
     assertEquals(weights(budget), { approve: 5, reject: 1, abstain: 0 });
@@ -61,7 +68,9 @@ Deno.test("voting: ballot context, weighted results and integrity", async () => 
     assertEquals((detail.body.stats as { participation: number }).participation, 100);
 
     // Ballots carry no reference to the voter.
-    const columns = all<{ name: string }>(env.db, "PRAGMA table_info(ballots)").map((column) => column.name);
+    const columns = (await env.db.all<{ name: string }>(
+      "SELECT column_name AS name FROM information_schema.columns WHERE table_name = 'ballots'",
+    )).map((column) => column.name);
     assertEquals(columns.sort(), ["id", "motion_id", "option_id", "source", "weight"]);
   } finally {
     await env.cleanup();
@@ -96,6 +105,7 @@ Deno.test("voting: concurrent requests with the same link count once", async () 
     );
     assertEquals(responses.filter((response) => response.status === 200).length, 1);
     assertEquals(responses.filter((response) => response.body.code === "ALREADY_VOTED").length, 9);
+    await env.request("POST", `/api/admin/elections/${electionId}/status`, { token: adminToken, json: { status: "closed" } });
     const detail = await env.request("GET", `/api/admin/elections/${electionId}`, { token: adminToken });
     assertEquals((detail.body.motions as MotionResult[])[0].totalWeight, 3);
   } finally {
@@ -132,7 +142,7 @@ Deno.test("voting: invalid links, incomplete ballots and foreign options are rej
     assertEquals([foreignMotion.status, foreignMotion.body.code], [400, "INVALID_MOTION"]);
 
     // Nothing was recorded by the rejected attempts.
-    assertEquals(all(env.db, "SELECT id FROM ballots").length, 0);
+    assertEquals((await env.db.all("SELECT id FROM ballots")).length, 0);
     assertEquals((await env.request("POST", "/api/vote", { json: { token, choices: choicesFor(ballot, ["approve", "List A"]) } })).status, 200);
   } finally {
     await env.cleanup();
@@ -146,7 +156,7 @@ Deno.test("voting: expired links and closed elections", async () => {
     const ana = await ballotOf("ana@example.com");
     const bruno = await ballotOf("bruno@example.com");
 
-    run(env.db, "UPDATE voters SET token_expires_at = ? WHERE email = ?", "2000-01-01T00:00:00.000Z", "ana@example.com");
+    await env.db.run("UPDATE voters SET token_expires_at = $1 WHERE email = $2", "2000-01-01T00:00:00.000Z", "ana@example.com");
     const context = await env.request("GET", `/api/vote/context?token=${ana.token}`);
     assertEquals((context.body.voter as { isExpired: boolean }).isExpired, true);
     const expired = await env.request("POST", "/api/vote", { json: { token: ana.token, choices: choicesFor(ana.ballot, ["approve", "List A"]) } });

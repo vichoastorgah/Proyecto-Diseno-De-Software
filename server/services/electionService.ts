@@ -9,17 +9,13 @@
  * - Ballots are anonymous; for every motion the weight of its ballots must equal the
  *   weight of the voters who voted. `getElectionDetail` reports that integrity check.
  */
-import { AppError, notFound, validationError, type ErrorDetail } from "../errors.ts";
-import { all, get, run, transaction } from "../db/database.ts";
+import { AppError, type ErrorDetail, notFound, validationError } from "../errors.ts";
+import type { Db } from "../db/database.ts";
 import type { ServiceContext } from "../context.ts";
 import type { Gender, VoterRow } from "./csvService.ts";
 import { generateToken, hashToken } from "./tokenService.ts";
-import {
-  type PreparedAttachment,
-  removeStoredFiles,
-  resolveStoredPath,
-  writeAttachment,
-} from "./attachmentService.ts";
+import type { PreparedAttachment } from "./attachmentService.ts";
+import { newStoredName } from "./fileStore.ts";
 import { type DeliveryMode, type EmailLanguage, renderInvitation } from "./emailService.ts";
 
 export const DEFAULT_OPTIONS: readonly string[] = ["approve", "reject"];
@@ -88,12 +84,13 @@ export interface ElectionSummary {
   stats: ElectionStats;
 }
 
+/** Tallies are null while the election is open (see `ElectionDetail.resultsAvailable`). */
 export interface OptionResult {
   id: number;
   label: string;
-  weight: number;
-  votes: number;
-  percentage: number;
+  weight: number | null;
+  votes: number | null;
+  percentage: number | null;
 }
 
 export interface MotionResult {
@@ -102,9 +99,9 @@ export interface MotionResult {
   title: string;
   description: string;
   options: OptionResult[];
-  totalWeight: number;
+  totalWeight: number | null;
   /** Number of individual ballots (legacy tallies excluded). */
-  ballotCount: number;
+  ballotCount: number | null;
   /** True when part of the tally was imported from the former JSON storage. */
   includesLegacyTally: boolean;
   integrity: { ok: boolean; expectedWeight: number; recordedWeight: number };
@@ -118,6 +115,12 @@ export interface AttachmentSummary {
 }
 
 export interface ElectionDetail extends ElectionSummary {
+  /**
+   * Secret ballot: tallies are only revealed once the election is closed. While it is
+   * open, comparing live tallies before and after each vote (with the voter list) would
+   * reveal individual choices.
+   */
+  resultsAvailable: boolean;
   motions: MotionResult[];
   attachments: AttachmentSummary[];
   invitations: Record<InvitationStatus, number>;
@@ -226,38 +229,38 @@ function tokenExpiry(ctx: ServiceContext, now = Date.now()): string {
 }
 
 /** Inserts voters with fresh tokens. Must run inside a transaction. */
-function insertVoters(ctx: ServiceContext, electionId: string, voters: readonly VoterRow[]): Invitation[] {
+async function insertVoters(ctx: ServiceContext, tx: Db, electionId: string, voters: readonly VoterRow[]): Promise<Invitation[]> {
   const now = new Date().toISOString();
   const expiresAt = tokenExpiry(ctx);
-  const insert = ctx.db.prepare(
-    `INSERT INTO voters (election_id, email, name, birthdate, gender, weight, token_hash, token_expires_at, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  );
-  return voters.map((voter) => {
+  const invitations: Invitation[] = [];
+  for (const voter of voters) {
     const token = generateToken();
-    const result = insert.run(
-      electionId, voter.email, voter.name, voter.birthdate, voter.gender, voter.weight,
-      hashToken(token), expiresAt, now,
+    const row = await tx.get<{ id: number }>(
+      `INSERT INTO voters (election_id, email, name, birthdate, gender, weight, token_hash, token_expires_at, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+      electionId, voter.email, voter.name, voter.birthdate, voter.gender, voter.weight, hashToken(token), expiresAt, now,
     );
-    return {
-      voterId: Number(result.lastInsertRowid),
+    invitations.push({
+      voterId: Number(row?.id),
       email: voter.email,
       name: voter.name,
       gender: voter.gender,
       token,
       tokenExpiresAt: expiresAt,
-    };
-  });
+    });
+  }
+  return invitations;
 }
 
 /**
  * Creates an election with its motions, attachments and voters in one transaction.
- * Attachment files are written first and deleted again if the transaction fails.
+ * Attachment files are stored first and deleted again if the transaction fails.
  */
 export async function createElection(
   ctx: ServiceContext,
   input: ElectionInput,
   actorEmail: string,
+  requestId: string | null = null,
 ): Promise<{ electionId: string; invitations: Invitation[] }> {
   if (input.voters.length === 0) {
     throw validationError("The voter list is empty.", [{ code: "CSV_NO_ROWS", message: "No voters." }]);
@@ -266,50 +269,62 @@ export async function createElection(
   const storedNames: string[] = [];
   try {
     for (const attachment of input.attachments) {
-      storedNames.push(await writeAttachment(ctx.config.uploadsDir, attachment));
+      const name = newStoredName(attachment.extension);
+      await ctx.files.put(name, attachment.bytes, attachment.mimeType);
+      storedNames.push(name);
     }
   } catch (error) {
-    await removeStoredFiles(ctx.config.uploadsDir, storedNames);
-    console.error("Failed to store attachments:", error);
+    await ctx.files.remove(storedNames);
+    console.error("Failed to store attachments:", error instanceof Error ? error.message : error);
     throw new AppError(500, "ATTACHMENT_STORAGE_FAILED", "Failed to store the attachments.");
   }
 
   const electionId = crypto.randomUUID();
   const now = new Date().toISOString();
   try {
-    const invitations = transaction(ctx.db, () => {
-      run(
-        ctx.db,
-        "INSERT INTO elections (id, title, description, status, created_by, created_at) VALUES (?, ?, ?, 'open', ?, ?)",
-        electionId, input.title, input.description, actorEmail, now,
+    const invitations = await ctx.db.transaction(async (tx) => {
+      await tx.run(
+        `INSERT INTO elections (id, title, description, status, created_by, created_at, request_id)
+         VALUES ($1, $2, $3, 'open', $4, $5, $6)`,
+        electionId, input.title, input.description, actorEmail, now, requestId,
       );
-      input.motions.forEach((motion, index) => {
+      for (const [index, motion] of input.motions.entries()) {
         const motionId = crypto.randomUUID();
-        run(
-          ctx.db,
-          "INSERT INTO motions (id, election_id, position, title, description) VALUES (?, ?, ?, ?, ?)",
+        await tx.run(
+          "INSERT INTO motions (id, election_id, position, title, description) VALUES ($1, $2, $3, $4, $5)",
           motionId, electionId, index + 1, motion.title, motion.description,
         );
-        motion.options.forEach((label, optionIndex) => {
-          run(ctx.db, "INSERT INTO motion_options (motion_id, position, label) VALUES (?, ?, ?)", motionId, optionIndex + 1, label);
-        });
-      });
-      input.attachments.forEach((attachment, index) => {
-        run(
-          ctx.db,
+        for (const [optionIndex, label] of motion.options.entries()) {
+          await tx.run("INSERT INTO motion_options (motion_id, position, label) VALUES ($1, $2, $3)", motionId, optionIndex + 1, label);
+        }
+      }
+      for (const [index, attachment] of input.attachments.entries()) {
+        await tx.run(
           `INSERT INTO attachments (id, election_id, original_name, stored_name, mime_type, size, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
           crypto.randomUUID(), electionId, attachment.originalName, storedNames[index],
           attachment.mimeType, attachment.bytes.byteLength, now,
         );
-      });
-      return insertVoters(ctx, electionId, input.voters);
+      }
+      return await insertVoters(ctx, tx, electionId, input.voters);
     });
     return { electionId, invitations };
   } catch (error) {
-    await removeStoredFiles(ctx.config.uploadsDir, storedNames);
+    await ctx.files.remove(storedNames);
     throw error;
   }
+}
+
+/** Election previously created with the same idempotency key, if any. */
+export async function findElectionByRequestId(
+  ctx: ServiceContext,
+  requestId: string,
+): Promise<{ electionId: string; imported: number; emailsSent: number; emailsFailed: string[] } | null> {
+  const row = await ctx.db.get<{ id: string; voters: number }>(
+    "SELECT e.id, (SELECT COUNT(*) FROM voters v WHERE v.election_id = e.id) AS voters FROM elections e WHERE e.request_id = $1",
+    requestId,
+  );
+  return row ? { electionId: row.id, imported: Number(row.voters), emailsSent: 0, emailsFailed: [] } : null;
 }
 
 // ---------- Invitations ----------
@@ -324,21 +339,22 @@ export async function sendInvitations(
   invitations: readonly Invitation[],
   language: EmailLanguage,
 ): Promise<DeliverySummary> {
-  const election = get<{ title: string }>(ctx.db, "SELECT title FROM elections WHERE id = ?", electionId);
+  const election = await ctx.db.get<{ title: string }>("SELECT title FROM elections WHERE id = $1", electionId);
   if (!election) throw notFound("ELECTION_NOT_FOUND", "Election not found.");
-  const motionTitles = all<{ title: string }>(
-    ctx.db, "SELECT title FROM motions WHERE election_id = ? ORDER BY position", electionId,
-  ).map((row) => row.title);
-  const attachments = all<{ original_name: string; stored_name: string }>(
-    ctx.db, "SELECT original_name, stored_name FROM attachments WHERE election_id = ? ORDER BY created_at, id", electionId,
-  ).flatMap((row) => {
-    const path = resolveStoredPath(ctx.config.uploadsDir, row.stored_name);
-    return path ? [{ filename: row.original_name, path }] : [];
-  });
+  const motionTitles = (await ctx.db.all<{ title: string }>(
+    "SELECT title FROM motions WHERE election_id = $1 ORDER BY position", electionId,
+  )).map((row) => row.title);
+
+  // Attachments are loaded once and reused for every recipient.
+  const attachments: { filename: string; content: Uint8Array }[] = [];
+  for (const row of await ctx.db.all<{ original_name: string; stored_name: string }>(
+    "SELECT original_name, stored_name FROM attachments WHERE election_id = $1 ORDER BY created_at, id", electionId,
+  )) {
+    const content = await ctx.files.get(row.stored_name);
+    if (content) attachments.push({ filename: row.original_name, content });
+  }
 
   const summary: DeliverySummary = { sent: 0, failed: [], mode: ctx.mailer.mode };
-  const markStatus = ctx.db.prepare("UPDATE voters SET invitation_status = ?, invited_at = ? WHERE id = ?");
-
   for (const invitation of invitations) {
     const message = renderInvitation({
       name: invitation.name,
@@ -350,15 +366,20 @@ export async function sendInvitations(
       expiresAt: invitation.tokenExpiresAt,
       attachmentCount: attachments.length,
     });
+    let status: InvitationStatus;
     try {
       await ctx.mailer.send({ to: invitation.email, ...message, attachments });
-      markStatus.run(ctx.mailer.mode === "smtp" ? "sent" : "simulated", new Date().toISOString(), invitation.voterId);
+      status = ctx.mailer.mode === "smtp" ? "sent" : "simulated";
       summary.sent += 1;
     } catch (error) {
       console.error(`Invitation delivery failed (voter #${invitation.voterId}):`, error instanceof Error ? error.message : error);
-      markStatus.run("failed", new Date().toISOString(), invitation.voterId);
+      status = "failed";
       summary.failed.push(invitation.email);
     }
+    await ctx.db.run(
+      "UPDATE voters SET invitation_status = $1, invited_at = $2 WHERE id = $3",
+      status, new Date().toISOString(), invitation.voterId,
+    );
   }
   return summary;
 }
@@ -375,18 +396,18 @@ interface ElectionRow {
   created_by: string | null;
   motion_count: number;
   voter_count: number;
-  voted_count: number | null;
-  total_weight: number | null;
-  voted_weight: number | null;
+  voted_count: number;
+  total_weight: number;
+  voted_weight: number;
 }
 
 const ELECTION_SUMMARY_SQL = `
   SELECT e.id, e.title, e.description, e.status, e.created_at, e.closed_at, e.created_by,
          (SELECT COUNT(*) FROM motions m WHERE m.election_id = e.id) AS motion_count,
          COUNT(v.id) AS voter_count,
-         SUM(v.has_voted) AS voted_count,
-         SUM(v.weight) AS total_weight,
-         SUM(CASE WHEN v.has_voted = 1 THEN v.weight ELSE 0 END) AS voted_weight
+         COUNT(v.id) FILTER (WHERE v.has_voted) AS voted_count,
+         COALESCE(SUM(v.weight), 0) AS total_weight,
+         COALESCE(SUM(v.weight) FILTER (WHERE v.has_voted), 0) AS voted_weight
   FROM elections e
   LEFT JOIN voters v ON v.election_id = e.id`;
 
@@ -394,9 +415,9 @@ const ratio = (part: number, total: number): number => (total > 0 ? Math.round((
 
 function toSummary(row: ElectionRow): ElectionSummary {
   const voterCount = Number(row.voter_count);
-  const votedCount = Number(row.voted_count ?? 0);
-  const totalWeight = Number(row.total_weight ?? 0);
-  const votedWeight = Number(row.voted_weight ?? 0);
+  const votedCount = Number(row.voted_count);
+  const totalWeight = Number(row.total_weight);
+  const votedWeight = Number(row.voted_weight);
   return {
     id: row.id,
     title: row.title,
@@ -419,57 +440,58 @@ function toSummary(row: ElectionRow): ElectionSummary {
 }
 
 /** Every election, newest first, with participation statistics. */
-export function listElections(ctx: ServiceContext): ElectionSummary[] {
-  return all<ElectionRow>(ctx.db, `${ELECTION_SUMMARY_SQL} GROUP BY e.id ORDER BY e.created_at DESC`).map(toSummary);
+export async function listElections(ctx: ServiceContext): Promise<ElectionSummary[]> {
+  return (await ctx.db.all<ElectionRow>(`${ELECTION_SUMMARY_SQL} GROUP BY e.id ORDER BY e.created_at DESC`)).map(toSummary);
 }
 
-function requireElection(ctx: ServiceContext, electionId: string): ElectionSummary {
-  const row = get<ElectionRow>(ctx.db, `${ELECTION_SUMMARY_SQL} WHERE e.id = ? GROUP BY e.id`, electionId);
+async function requireElection(db: Db, electionId: string): Promise<ElectionSummary> {
+  const row = await db.get<ElectionRow>(`${ELECTION_SUMMARY_SQL} WHERE e.id = $1 GROUP BY e.id`, electionId);
   if (!row) throw notFound("ELECTION_NOT_FOUND", "Election not found.");
   return toSummary(row);
 }
 
 /** Election with motions, weighted results per option, integrity check and attachments. */
-export function getElectionDetail(ctx: ServiceContext, electionId: string): ElectionDetail {
-  const summary = requireElection(ctx, electionId);
+export async function getElectionDetail(ctx: ServiceContext, electionId: string): Promise<ElectionDetail> {
+  const summary = await requireElection(ctx.db, electionId);
 
-  const motions = all<{ id: string; position: number; title: string; description: string }>(
-    ctx.db, "SELECT id, position, title, description FROM motions WHERE election_id = ? ORDER BY position", electionId,
+  const motions = await ctx.db.all<{ id: string; position: number; title: string; description: string }>(
+    "SELECT id, position, title, description FROM motions WHERE election_id = $1 ORDER BY position", electionId,
   );
-  const optionRows = all<{ motion_id: string; id: number; label: string; weight: number; votes: number; legacy: number }>(
-    ctx.db,
+  const optionRows = await ctx.db.all<{ motion_id: string; id: number; label: string; weight: number; votes: number; legacy: number }>(
     `SELECT o.motion_id, o.id, o.label,
             COALESCE(SUM(b.weight), 0) AS weight,
-            COALESCE(SUM(CASE WHEN b.source = 'vote' THEN 1 ELSE 0 END), 0) AS votes,
-            COALESCE(SUM(CASE WHEN b.source = 'legacy' THEN 1 ELSE 0 END), 0) AS legacy
+            COUNT(b.id) FILTER (WHERE b.source = 'vote') AS votes,
+            COUNT(b.id) FILTER (WHERE b.source = 'legacy') AS legacy
      FROM motion_options o
      JOIN motions m ON m.id = o.motion_id
      LEFT JOIN ballots b ON b.motion_id = o.motion_id AND b.option_id = o.id
-     WHERE m.election_id = ?
+     WHERE m.election_id = $1
      GROUP BY o.id
      ORDER BY o.motion_id, o.position`,
     electionId,
   );
 
+  const resultsAvailable = summary.status === "closed";
   const results: MotionResult[] = motions.map((motion) => {
     const rows = optionRows.filter((row) => row.motion_id === motion.id);
     const totalWeight = rows.reduce((sum, row) => sum + Number(row.weight), 0);
     const recordedWeight = Math.round(totalWeight * 1e6) / 1e6;
     const expectedWeight = Math.round(summary.stats.votedWeight * 1e6) / 1e6;
+    const reveal = <T>(value: T): T | null => (resultsAvailable ? value : null);
     return {
       id: motion.id,
-      position: motion.position,
+      position: Number(motion.position),
       title: motion.title,
       description: motion.description,
       options: rows.map((row) => ({
-        id: row.id,
+        id: Number(row.id),
         label: row.label,
-        weight: Number(row.weight),
-        votes: Number(row.votes),
-        percentage: ratio(Number(row.weight), totalWeight),
+        weight: reveal(Number(row.weight)),
+        votes: reveal(Number(row.votes)),
+        percentage: reveal(ratio(Number(row.weight), totalWeight)),
       })),
-      totalWeight,
-      ballotCount: rows.reduce((sum, row) => sum + Number(row.votes), 0),
+      totalWeight: reveal(totalWeight),
+      ballotCount: reveal(rows.reduce((sum, row) => sum + Number(row.votes), 0)),
       includesLegacyTally: rows.some((row) => Number(row.legacy) > 0),
       integrity: {
         ok: Math.abs(recordedWeight - expectedWeight) < WEIGHT_EPSILON,
@@ -479,18 +501,18 @@ export function getElectionDetail(ctx: ServiceContext, electionId: string): Elec
     };
   });
 
-  const attachments = all<{ id: string; original_name: string; mime_type: string; size: number }>(
-    ctx.db, "SELECT id, original_name, mime_type, size FROM attachments WHERE election_id = ? ORDER BY created_at, id", electionId,
-  ).map((row) => ({ id: row.id, name: row.original_name, mimeType: row.mime_type, size: Number(row.size) }));
+  const attachments = (await ctx.db.all<{ id: string; original_name: string; mime_type: string; size: number }>(
+    "SELECT id, original_name, mime_type, size FROM attachments WHERE election_id = $1 ORDER BY created_at, id", electionId,
+  )).map((row) => ({ id: row.id, name: row.original_name, mimeType: row.mime_type, size: Number(row.size) }));
 
   const invitations: Record<InvitationStatus, number> = { pending: 0, sent: 0, simulated: 0, failed: 0, legacy: 0 };
-  for (const row of all<{ invitation_status: InvitationStatus; total: number }>(
-    ctx.db, "SELECT invitation_status, COUNT(*) AS total FROM voters WHERE election_id = ? GROUP BY invitation_status", electionId,
+  for (const row of await ctx.db.all<{ invitation_status: InvitationStatus; total: number }>(
+    "SELECT invitation_status, COUNT(*) AS total FROM voters WHERE election_id = $1 GROUP BY invitation_status", electionId,
   )) {
     invitations[row.invitation_status] = Number(row.total);
   }
 
-  return { ...summary, motions: results, attachments, invitations };
+  return { ...summary, resultsAvailable, motions: results, attachments, invitations };
 }
 
 export interface VoterListItem {
@@ -500,7 +522,6 @@ export interface VoterListItem {
   gender: Gender;
   weight: number;
   hasVoted: boolean;
-  votedAt: string | null;
   invitationStatus: InvitationStatus;
   invitedAt: string | null;
   tokenExpiresAt: string | null;
@@ -514,47 +535,47 @@ export interface VoterListQuery {
   pageSize?: number;
 }
 
-/** Paginated voter list of an election (birthdates are not exposed: data minimization). */
-export function listVoters(
+/**
+ * Paginated voter list of an election. Data minimization: no birthdates, and no time of
+ * vote (with the time, tallies could be correlated with individual voters).
+ */
+export async function listVoters(
   ctx: ServiceContext,
   electionId: string,
   query: VoterListQuery,
-): { items: VoterListItem[]; total: number; page: number; pageSize: number } {
-  requireElection(ctx, electionId);
+): Promise<{ items: VoterListItem[]; total: number; page: number; pageSize: number }> {
+  await requireElection(ctx.db, electionId);
   const pageSize = Math.min(Math.max(Math.trunc(query.pageSize ?? 25), 1), 100);
   const page = Math.max(Math.trunc(query.page ?? 1), 1);
   const search = (query.search ?? "").trim().toLowerCase().slice(0, 100);
 
-  const conditions = ["election_id = ?"];
+  const conditions = ["election_id = $1"];
   const params: (string | number)[] = [electionId];
   if (search !== "") {
-    conditions.push("(email LIKE ? ESCAPE '\\' OR lower(name) LIKE ? ESCAPE '\\')");
-    const pattern = `%${search.replace(/[\\%_]/g, (char) => `\\${char}`)}%`;
-    params.push(pattern, pattern);
+    params.push(`%${search.replace(/[\\%_]/g, (char) => `\\${char}`)}%`);
+    conditions.push(`(email LIKE $${params.length} ESCAPE '\\' OR lower(name) LIKE $${params.length} ESCAPE '\\')`);
   }
-  if (query.status === "voted") conditions.push("has_voted = 1");
-  if (query.status === "pending") conditions.push("has_voted = 0");
+  if (query.status === "voted") conditions.push("has_voted");
+  if (query.status === "pending") conditions.push("NOT has_voted");
   const where = conditions.join(" AND ");
 
-  const total = Number(get<{ total: number }>(ctx.db, `SELECT COUNT(*) AS total FROM voters WHERE ${where}`, ...params)?.total ?? 0);
+  const total = Number((await ctx.db.get<{ total: number }>(`SELECT COUNT(*) AS total FROM voters WHERE ${where}`, ...params))?.total ?? 0);
   const now = Date.now();
-  const items = all<{
-    id: number; email: string; name: string; gender: Gender; weight: number; has_voted: number;
-    voted_at: string | null; invitation_status: VoterListItem["invitationStatus"]; invited_at: string | null;
-    token_expires_at: string | null;
+  const rows = await ctx.db.all<{
+    id: number; email: string; name: string; gender: Gender; weight: number; has_voted: boolean;
+    invitation_status: InvitationStatus; invited_at: string | null; token_expires_at: string | null;
   }>(
-    ctx.db,
-    `SELECT id, email, name, gender, weight, has_voted, voted_at, invitation_status, invited_at, token_expires_at
-     FROM voters WHERE ${where} ORDER BY name COLLATE NOCASE, id LIMIT ? OFFSET ?`,
+    `SELECT id, email, name, gender, weight, has_voted, invitation_status, invited_at, token_expires_at
+     FROM voters WHERE ${where} ORDER BY lower(name), id LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
     ...params, pageSize, (page - 1) * pageSize,
-  ).map((row) => ({
+  );
+  const items = rows.map((row) => ({
     id: Number(row.id),
     email: row.email,
     name: row.name,
     gender: row.gender,
     weight: Number(row.weight),
-    hasVoted: row.has_voted === 1,
-    votedAt: row.voted_at,
+    hasVoted: row.has_voted,
     invitationStatus: row.invitation_status,
     invitedAt: row.invited_at,
     tokenExpiresAt: row.token_expires_at,
@@ -571,14 +592,16 @@ export function listVoters(
  * registered in the election (existing tokens and votes are never touched).
  * @throws {AppError} 404, 409 ELECTION_CLOSED, 409 VOTERS_ALREADY_EXIST.
  */
-export function addVoters(ctx: ServiceContext, electionId: string, voters: readonly VoterRow[]): Invitation[] {
+export async function addVoters(ctx: ServiceContext, electionId: string, voters: readonly VoterRow[]): Promise<Invitation[]> {
   if (voters.length === 0) throw validationError("The voter list is empty.");
-  return transaction(ctx.db, () => {
-    const election = requireElection(ctx, electionId);
+  return await ctx.db.transaction(async (tx) => {
+    // Lock the election row: concurrent imports into the same election are serialized.
+    const election = await tx.get<{ status: string }>("SELECT status FROM elections WHERE id = $1 FOR UPDATE", electionId);
+    if (!election) throw notFound("ELECTION_NOT_FOUND", "Election not found.");
     if (election.status !== "open") throw new AppError(409, "ELECTION_CLOSED", "The election is closed.");
 
     const existing = new Set(
-      all<{ email: string }>(ctx.db, "SELECT email FROM voters WHERE election_id = ?", electionId).map((row) => row.email),
+      (await tx.all<{ email: string }>("SELECT email FROM voters WHERE election_id = $1", electionId)).map((row) => row.email),
     );
     const duplicates = voters.filter((voter) => existing.has(voter.email));
     if (duplicates.length > 0) {
@@ -589,7 +612,7 @@ export function addVoters(ctx: ServiceContext, electionId: string, voters: reado
         duplicates.slice(0, 100).map((voter) => ({ code: "VOTER_ALREADY_EXISTS", message: voter.email, value: voter.email })),
       );
     }
-    return insertVoters(ctx, electionId, voters);
+    return await insertVoters(ctx, tx, electionId, voters);
   });
 }
 
@@ -598,78 +621,72 @@ export function addVoters(ctx: ServiceContext, electionId: string, voters: reado
  * and returns the invitation to send.
  * @throws {AppError} 404 VOTER_NOT_FOUND, 409 ALREADY_VOTED / ELECTION_CLOSED.
  */
-export function rotateVoterToken(ctx: ServiceContext, electionId: string, voterId: number): Invitation {
-  return transaction(ctx.db, () => {
-    const election = requireElection(ctx, electionId);
-    const voter = get<{ id: number; email: string; name: string; gender: Gender; has_voted: number }>(
-      ctx.db, "SELECT id, email, name, gender, has_voted FROM voters WHERE id = ? AND election_id = ?", voterId, electionId,
+export async function rotateVoterToken(ctx: ServiceContext, electionId: string, voterId: number): Promise<Invitation> {
+  return await ctx.db.transaction(async (tx) => {
+    const election = await tx.get<{ status: string }>("SELECT status FROM elections WHERE id = $1", electionId);
+    if (!election) throw notFound("ELECTION_NOT_FOUND", "Election not found.");
+    const voter = await tx.get<{ id: number; email: string; name: string; gender: Gender; has_voted: boolean }>(
+      "SELECT id, email, name, gender, has_voted FROM voters WHERE id = $1 AND election_id = $2 FOR UPDATE", voterId, electionId,
     );
     if (!voter) throw notFound("VOTER_NOT_FOUND", "Voter not found.");
-    if (voter.has_voted === 1) throw new AppError(409, "ALREADY_VOTED", "This voter has already voted.");
+    if (voter.has_voted) throw new AppError(409, "ALREADY_VOTED", "This voter has already voted.");
     if (election.status !== "open") throw new AppError(409, "ELECTION_CLOSED", "The election is closed.");
 
     const token = generateToken();
     const expiresAt = tokenExpiry(ctx);
-    run(ctx.db, "UPDATE voters SET token_hash = ?, token_expires_at = ? WHERE id = ?", hashToken(token), expiresAt, voterId);
+    await tx.run("UPDATE voters SET token_hash = $1, token_expires_at = $2 WHERE id = $3", hashToken(token), expiresAt, voterId);
     return { voterId: Number(voter.id), email: voter.email, name: voter.name, gender: voter.gender, token, tokenExpiresAt: expiresAt };
   });
 }
 
 /** Opens or closes an election. A closed election rejects every ballot. */
-export function setElectionStatus(ctx: ServiceContext, electionId: string, status: unknown): ElectionSummary {
+export async function setElectionStatus(ctx: ServiceContext, electionId: string, status: unknown): Promise<ElectionSummary> {
   if (status !== "open" && status !== "closed") {
     throw validationError("status must be 'open' or 'closed'.");
   }
-  transaction(ctx.db, () => {
-    requireElection(ctx, electionId);
-    run(
-      ctx.db,
-      "UPDATE elections SET status = ?, closed_at = ? WHERE id = ?",
-      status, status === "closed" ? new Date().toISOString() : null, electionId,
-    );
-  });
-  return requireElection(ctx, electionId);
+  const changed = await ctx.db.run(
+    "UPDATE elections SET status = $1, closed_at = $2 WHERE id = $3",
+    status, status === "closed" ? new Date().toISOString() : null, electionId,
+  );
+  if (changed === 0) throw notFound("ELECTION_NOT_FOUND", "Election not found.");
+  return await requireElection(ctx.db, electionId);
 }
 
-/** Resolves a stored attachment of an election. */
-export function getAttachmentFile(
+/** Loads a stored attachment of an election. */
+export async function getAttachmentFile(
   ctx: ServiceContext,
   electionId: string,
   attachmentId: string,
-): { path: string; name: string } {
-  const row = get<{ original_name: string; stored_name: string }>(
-    ctx.db, "SELECT original_name, stored_name FROM attachments WHERE id = ? AND election_id = ?", attachmentId, electionId,
+): Promise<{ bytes: Uint8Array; name: string }> {
+  const row = await ctx.db.get<{ original_name: string; stored_name: string }>(
+    "SELECT original_name, stored_name FROM attachments WHERE id = $1 AND election_id = $2", attachmentId, electionId,
   );
-  const path = row ? resolveStoredPath(ctx.config.uploadsDir, row.stored_name) : null;
-  if (!row || !path) throw notFound("ATTACHMENT_NOT_FOUND", "Attachment not found.");
-  return { path, name: row.original_name };
+  const bytes = row ? await ctx.files.get(row.stored_name) : null;
+  if (!row || !bytes) throw notFound("ATTACHMENT_NOT_FOUND", "Attachment not found.");
+  return { bytes, name: row.original_name };
 }
 
 /** Figures for the admin dashboard (real data only). */
-export function getDashboardSummary(ctx: ServiceContext): Record<string, number> {
-  const elections = get<{ total: number; open: number }>(
-    ctx.db, "SELECT COUNT(*) AS total, COALESCE(SUM(status = 'open'), 0) AS open FROM elections",
+export async function getDashboardSummary(ctx: ServiceContext): Promise<Record<string, number>> {
+  const row = await ctx.db.get<Record<string, number>>(
+    `SELECT (SELECT COUNT(*) FROM elections) AS elections,
+            (SELECT COUNT(*) FROM elections WHERE status = 'open') AS open_elections,
+            (SELECT COUNT(*) FROM voters) AS voters,
+            (SELECT COUNT(*) FROM voters WHERE has_voted) AS votes_cast,
+            (SELECT COUNT(*) FROM surveys) AS surveys,
+            (SELECT COUNT(*) FROM survey_questions) AS questions,
+            (SELECT COUNT(*) FROM survey_questions WHERE status = 'answered') AS answered`,
   );
-  const voters = get<{ total: number; voted: number }>(
-    ctx.db, "SELECT COUNT(*) AS total, COALESCE(SUM(has_voted), 0) AS voted FROM voters",
-  );
-  const surveys = get<{ total: number }>(ctx.db, "SELECT COUNT(*) AS total FROM surveys");
-  const questions = get<{ total: number; answered: number }>(
-    ctx.db, "SELECT COUNT(*) AS total, COALESCE(SUM(status = 'answered'), 0) AS answered FROM survey_questions",
-  );
-  const voterTotal = Number(voters?.total ?? 0);
-  const voterVoted = Number(voters?.voted ?? 0);
-  const questionTotal = Number(questions?.total ?? 0);
-  const questionAnswered = Number(questions?.answered ?? 0);
+  const value = (key: string) => Number(row?.[key] ?? 0);
   return {
-    elections: Number(elections?.total ?? 0),
-    openElections: Number(elections?.open ?? 0),
-    voters: voterTotal,
-    votesCast: voterVoted,
-    participation: ratio(voterVoted, voterTotal),
-    surveys: Number(surveys?.total ?? 0),
-    surveyQuestions: questionTotal,
-    answeredQuestions: questionAnswered,
-    surveyCompletion: ratio(questionAnswered, questionTotal),
+    elections: value("elections"),
+    openElections: value("open_elections"),
+    voters: value("voters"),
+    votesCast: value("votes_cast"),
+    participation: ratio(value("votes_cast"), value("voters")),
+    surveys: value("surveys"),
+    surveyQuestions: value("questions"),
+    answeredQuestions: value("answered"),
+    surveyCompletion: ratio(value("answered"), value("questions")),
   };
 }

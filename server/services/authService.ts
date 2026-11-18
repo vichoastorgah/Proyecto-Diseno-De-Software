@@ -76,7 +76,7 @@ function matches(email: string, emails: readonly string[], domains: readonly str
 export interface AuthServiceOptions {
   config: AppConfig;
   /** Lets survey participants sign in even when they are not in an allow-list. */
-  isSurveyParticipant: (email: string) => boolean;
+  isSurveyParticipant: (email: string) => Promise<boolean>;
   verifyGoogleToken?: GoogleTokenVerifier;
 }
 
@@ -89,11 +89,13 @@ export function createAuthService(options: AuthServiceOptions): AuthService {
   const openMode = !hasAdminList && !hasAllowList;
 
   let secret: Uint8Array;
-  if (config.sessionSecret.length >= MIN_SECRET_LENGTH) {
+  // A placeholder copied from .env.example is public knowledge: treat it as missing.
+  const isPlaceholder = /change[-_ ]?me|example|your[-_]/i.test(config.sessionSecret);
+  if (config.sessionSecret.length >= MIN_SECRET_LENGTH && !isPlaceholder) {
     secret = new TextEncoder().encode(config.sessionSecret);
   } else {
     console.warn(
-      `[auth] SESSION_SECRET is missing or shorter than ${MIN_SECRET_LENGTH} characters: ` +
+      `[auth] SESSION_SECRET is missing, a placeholder or shorter than ${MIN_SECRET_LENGTH} characters: ` +
         "using a random secret, sessions end when the server restarts.",
     );
     secret = crypto.getRandomValues(new Uint8Array(MIN_SECRET_LENGTH));
@@ -109,9 +111,9 @@ export function createAuthService(options: AuthServiceOptions): AuthService {
     return true;
   };
 
-  const canSignIn = (email: string): boolean =>
+  const canSignIn = async (email: string): Promise<boolean> =>
     openMode || isAdmin(email) || matches(email, config.allowedEmails, config.allowedDomains) ||
-    isSurveyParticipant(email);
+    await isSurveyParticipant(email);
 
   const issueSession = async (identity: VerifiedIdentity, ttlSeconds = SESSION_TTL_SECONDS): Promise<SessionGrant> => {
     const expiresAtSeconds = Math.floor(Date.now() / 1000) + ttlSeconds;
@@ -148,7 +150,7 @@ export function createAuthService(options: AuthServiceOptions): AuthService {
       if (email === "" || payload.email_verified !== true) {
         throw new AppError(401, "INVALID_CREDENTIAL", "The Google account email is not verified.");
       }
-      if (!canSignIn(email)) {
+      if (!await canSignIn(email)) {
         throw new AppError(403, "UNAUTHORIZED_USER", "This account is not authorized.");
       }
       return issueSession({
@@ -164,7 +166,7 @@ export function createAuthService(options: AuthServiceOptions): AuthService {
       try {
         const { payload } = await jwtVerify(match[1], secret, { issuer: SESSION_ISSUER, algorithms: ["HS256"] });
         const email = typeof payload.sub === "string" ? payload.sub : "";
-        if (email === "" || !canSignIn(email)) return null;
+        if (email === "" || !await canSignIn(email)) return null;
         return {
           email,
           name: typeof payload.name === "string" ? payload.name : email,

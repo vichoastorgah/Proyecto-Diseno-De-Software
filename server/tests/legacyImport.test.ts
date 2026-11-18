@@ -1,6 +1,5 @@
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
-import { all } from "../db/database.ts";
 import { findIntegrityIssues, importLegacyData } from "../db/legacyImport.ts";
 import { ADMIN, createTestEnv, PDF_BYTES } from "./testUtils.ts";
 
@@ -45,11 +44,11 @@ Deno.test("legacy import: JSON data is migrated once, links keep working, files 
     await writeLegacyFiles(dir, env.config.uploadsDir);
     const before = await Promise.all(["motions.json", "voters.json", "data.json"].map((file) => Deno.readTextFile(join(dir, file))));
 
-    const report = await importLegacyData(env.db, dir, env.config.uploadsDir);
+    const report = await importLegacyData(env.db, dir, env.files);
     assertEquals([report.status, report.elections, report.voters, report.surveys, report.questions, report.delegations, report.attachments],
       ["imported", 1, 2, 1, 2, 1, 1]);
     assertEquals(report.warnings.length, 1); // the orphan voter
-    assertEquals(findIntegrityIssues(env.db), []);
+    assertEquals(await findIntegrityIssues(env.db), []);
 
     // Source files are byte-for-byte identical.
     const after = await Promise.all(["motions.json", "voters.json", "data.json"].map((file) => Deno.readTextFile(join(dir, file))));
@@ -68,6 +67,7 @@ Deno.test("legacy import: JSON data is migrated once, links keep working, files 
     });
     assertEquals(vote.status, 200);
     const admin = await env.sessionFor(ADMIN);
+    await env.request("POST", "/api/admin/elections/11111111-1111-1111-1111-111111111111/status", { token: admin, json: { status: "closed" } });
     const detail = await env.request("GET", "/api/admin/elections/11111111-1111-1111-1111-111111111111", { token: admin });
     const motion = (detail.body.motions as { options: { label: string; weight: number }[]; includesLegacyTally: boolean; integrity: { ok: boolean } }[])[0];
     assertEquals(motion.options.map((option) => [option.label, option.weight]), [["approve", 2], ["reject", 1]]);
@@ -75,16 +75,16 @@ Deno.test("legacy import: JSON data is migrated once, links keep working, files 
     assertEquals(motion.integrity.ok, true);
 
     // Survey ownership and history preserved.
-    const questions = all<{ code: string; current_owner: string; status: string }>(env.db, "SELECT code, current_owner, status FROM survey_questions ORDER BY position");
+    const questions = await env.db.all<{ code: string; current_owner: string; status: string }>("SELECT code, current_owner, status FROM survey_questions ORDER BY position");
     assertEquals(questions, [
       { code: "q-001", current_owner: "cfo@example.com", status: "answered" },
       { code: "q-002", current_owner: "ceo@example.com", status: "pending" },
     ]);
 
     // Second run does nothing.
-    const again = await importLegacyData(env.db, dir, env.config.uploadsDir);
+    const again = await importLegacyData(env.db, dir, env.files);
     assertEquals(again.status, "skipped");
-    assertEquals(all(env.db, "SELECT id FROM elections").length, 1);
+    assertEquals((await env.db.all("SELECT id FROM elections")).length, 1);
   } finally {
     await env.cleanup();
   }
@@ -93,7 +93,7 @@ Deno.test("legacy import: JSON data is migrated once, links keep working, files 
 Deno.test("legacy import: no files means nothing to do", async () => {
   const env = await createTestEnv();
   try {
-    const report = await importLegacyData(env.db, env.config.legacyDataDir, env.config.uploadsDir);
+    const report = await importLegacyData(env.db, env.config.legacyDataDir, env.files);
     assertEquals(report.status, "skipped");
   } finally {
     await env.cleanup();

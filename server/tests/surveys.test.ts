@@ -1,5 +1,4 @@
 import { assertEquals, assertMatch } from "@std/assert";
-import { all } from "../db/database.ts";
 import { categorizeQuestion } from "../services/surveyService.ts";
 import { ADMIN, createTestEnv, type TestEnv } from "./testUtils.ts";
 
@@ -116,7 +115,7 @@ Deno.test("surveys: delegation transfers responsibility and only the owner can a
     assertEquals([ceoAnswer.status, ceoAnswer.body.code], [403, "NOT_QUESTION_OWNER"]);
 
     // Exactly one responsible per question, with the audit trail.
-    const owners = all<{ current_owner: string }>(env.db, "SELECT current_owner FROM survey_questions WHERE category = 'finance'");
+    const owners = await env.db.all<{ current_owner: string }>("SELECT current_owner FROM survey_questions WHERE category = 'finance'");
     assertEquals(owners.map((row) => row.current_owner), [CFO, CFO]);
 
     // The CFO re-delegates one question to the COO, then answers the other one.
@@ -149,10 +148,10 @@ Deno.test("surveys: delegation transfers responsibility and only the owner can a
       token: ceo, json: { questionIds: [survey.questions[1].id, second.id], newOwnerEmail: CFO },
     });
     assertEquals(mixed.status, 403);
-    const stillCeo = all<{ current_owner: string }>(env.db, "SELECT current_owner FROM survey_questions WHERE id = ?", survey.questions[1].id);
+    const stillCeo = await env.db.all<{ current_owner: string }>("SELECT current_owner FROM survey_questions WHERE id = $1", survey.questions[1].id);
     assertEquals(stillCeo[0].current_owner, RECIPIENT);
 
-    const history = all(env.db, "SELECT from_email, to_email FROM survey_delegations ORDER BY id");
+    const history = await env.db.all("SELECT from_email, to_email FROM survey_delegations ORDER BY id");
     assertEquals(history.length, 3);
   } finally {
     await env.cleanup();
