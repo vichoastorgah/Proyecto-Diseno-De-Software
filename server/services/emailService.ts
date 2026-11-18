@@ -167,7 +167,7 @@ export function renderInvitation(content: InvitationContent): RenderedEmail {
   const instruction = es
     ? "Usa tu enlace personal. Solo puedes votar una vez y tu voto es secreto."
     : "Use your personal link. You can vote only once and your vote is secret.";
-  const expiryLine = expiry ? (es ? `El enlace es válido hasta el ${expiry}.` : `The link is valid until ${expiry}.`) : null;
+  const expiryLine = expiry ? (es ? `El enlace es válido hasta: ${expiry}` : `The link is valid until: ${expiry}`) : null;
   const attachmentLine = content.attachmentCount > 0
     ? (es ? "Los documentos de respaldo van adjuntos a este correo." : "Supporting documents are attached to this email.")
     : null;
