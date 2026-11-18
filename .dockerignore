@@ -1,0 +1,21 @@
+# Only deno.json, deno.lock and server/ are needed by the image.
+.git
+.github
+.vscode
+.claude
+client
+docs
+samples
+*.md
+
+# Secrets and personal data must never reach an image.
+.env
+.env.*
+*.csv
+server/voters.json
+server/motions.json
+server/data.json
+server/storage
+server/uploads
+server/tests
+node_modules
