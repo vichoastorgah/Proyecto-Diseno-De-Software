@@ -139,7 +139,8 @@
       "CONFLICT": "The data changed while you were working. Refresh and try again.",
       "INVALID_EMAIL": "The email address is not valid.",
       "UNSUPPORTED_MEDIA_TYPE": "Unsupported upload format.",
-      "LENGTH_REQUIRED": "The upload size could not be determined."
+      "LENGTH_REQUIRED": "The upload size could not be determined.",
+      "METHOD_NOT_ALLOWED": "This action is not allowed."
     },
     "details": {
       "CSV_EMPTY": "The file is empty.",
@@ -333,7 +334,8 @@
     "notice": {
       "created": "Vote created with {count} voter(s)",
       "added": "{count} voter(s) added",
-      "resent": "A new link was sent to {email}"
+      "resent": "A new link was sent to {email}",
+      "duplicate": "Vote already created"
     },
     "emailsSent": "{count} personalized email(s) were sent.",
     "emailsSimulated": "Simulated mode (no SMTP): {count} email(s) were printed in the server console.",
@@ -388,7 +390,10 @@
       "resend": "Resend link",
       "resendTitle": "Resend the link?",
       "resendText": "A new link will be generated for {name} ({email}) and the previous one will stop working."
-    }
+    },
+    "resultsHiddenTitle": "Results hidden until the vote is closed",
+    "resultsHiddenText": "To protect the secrecy of the ballot, results are only shown once the vote is closed. Meanwhile you can follow participation and the integrity check.",
+    "duplicateText": "This vote had already been created by this same submission; nothing new was created and no email was sent again."
   },
   "surveyForm": {
     "title": "New survey",

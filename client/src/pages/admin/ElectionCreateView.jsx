@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { saveBlob } from "../../api/client";
 import { useAuth } from "../../context/useAuth";
@@ -164,11 +164,16 @@ export default function ElectionCreateView() {
   const [showErrors, setShowErrors] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState(null);
+  // Idempotency key: a retried submission (e.g. after a timeout) never creates a second vote.
+  const [requestId] = useState(() => crypto.randomUUID());
+  // Only the latest CSV check may update the screen (a slow answer for a previous file is ignored).
+  const csvCheckSeq = useRef(0);
 
   const updateMotion = (key, patch) =>
     setMotions((current) => current.map((motion) => (motion.key === key ? { ...motion, ...patch } : motion)));
 
   const validateCsv = async (file) => {
+    const sequence = ++csvCheckSeq.current;
     setCsvFile(file);
     if (!file) {
       setCsvCheck({ status: "idle", result: null, error: null });
@@ -179,8 +184,10 @@ export default function ElectionCreateView() {
     form.set("votersCsv", file);
     try {
       const result = await request("/api/admin/csv/validate", { method: "POST", form });
+      if (sequence !== csvCheckSeq.current) return;
       setCsvCheck({ status: result.errors.length === 0 ? "valid" : "invalid", result, error: null });
     } catch (error) {
+      if (sequence !== csvCheckSeq.current) return;
       setCsvCheck({ status: "invalid", result: null, error });
     }
   };
@@ -235,6 +242,7 @@ export default function ElectionCreateView() {
     form.set("votersCsv", csvFile);
     for (const file of attachments) form.append("attachments", file);
     form.set("lang", emailLanguage);
+    form.set("requestId", requestId);
 
     setSubmitting(true);
     try {

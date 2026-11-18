@@ -139,7 +139,8 @@
       "CONFLICT": "La información cambió mientras trabajabas. Actualiza e inténtalo otra vez.",
       "INVALID_EMAIL": "El correo no es válido.",
       "UNSUPPORTED_MEDIA_TYPE": "Formato de envío no soportado.",
-      "LENGTH_REQUIRED": "No se pudo determinar el tamaño del envío."
+      "LENGTH_REQUIRED": "No se pudo determinar el tamaño del envío.",
+      "METHOD_NOT_ALLOWED": "Esta acción no está permitida."
     },
     "details": {
       "CSV_EMPTY": "El archivo está vacío.",
@@ -333,7 +334,8 @@
     "notice": {
       "created": "Votación creada con {count} votante(s)",
       "added": "Se agregaron {count} votante(s)",
-      "resent": "Se envió un enlace nuevo a {email}"
+      "resent": "Se envió un enlace nuevo a {email}",
+      "duplicate": "Votación ya creada anteriormente"
     },
     "emailsSent": "Se enviaron {count} correo(s) personalizados.",
     "emailsSimulated": "Modo simulado (sin SMTP): {count} correo(s) se mostraron en la consola del servidor.",
@@ -388,7 +390,10 @@
       "resend": "Reenviar enlace",
       "resendTitle": "¿Reenviar el enlace?",
       "resendText": "Se generará un enlace nuevo para {name} ({email}) y el anterior dejará de funcionar."
-    }
+    },
+    "resultsHiddenTitle": "Resultados ocultos hasta el cierre",
+    "resultsHiddenText": "Para proteger el secreto del voto, los resultados se muestran solo cuando la votación está cerrada. Mientras tanto puedes seguir la participación y la verificación de integridad.",
+    "duplicateText": "Esta votación ya se había creado con este mismo envío; no se creó otra ni se reenviaron correos."
   },
   "surveyForm": {
     "title": "Nuevo cuestionario",

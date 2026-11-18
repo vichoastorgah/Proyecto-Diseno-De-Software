@@ -9,11 +9,11 @@ import { categoryLabel, isValidEmail } from "../../utils/format";
 
 const MAX_QUESTIONS = 200;
 
-/** One question per non-empty line. */
+/** One question per non-empty line, with whitespace collapsed exactly like the server does. */
 function splitQuestions(text) {
   return text
     .split(/\r?\n/)
-    .map((line) => line.trim())
+    .map((line) => line.trim().replace(/\s+/g, " "))
     .filter((line) => line !== "");
 }
 
@@ -160,7 +160,7 @@ export default function SurveyCreateView() {
           <div className="col-12 col-lg-5">
             <Section title={t("surveyForm.previewTitle")} description={t("surveyForm.previewDescription")}>
               {questions.length === 0 && <p className="text-body-secondary small mb-0">{t("surveyForm.previewEmpty")}</p>}
-              {preview.loading && <LoadingState compact label={t("surveyForm.categorizing")} />}
+              {preview.loading && questions.length > 0 && <LoadingState compact label={t("surveyForm.categorizing")} />}
               <ErrorNotice error={preview.error} />
               {questions.length > 0 &&
                 grouped.map(([category, items]) => (

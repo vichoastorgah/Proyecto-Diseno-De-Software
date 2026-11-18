@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { saveBlob } from "../../api/client";
 import { useAuth } from "../../context/useAuth";
@@ -25,14 +25,20 @@ function DeliveryNotice({ result, kind, onDismiss }) {
       details={result.emailsFailed?.length ? [t("electionDetail.failedRecipients", { list: result.emailsFailed.join(", ") })] : []}
       onDismiss={onDismiss}
     >
-      {t(simulated ? "electionDetail.emailsSimulated" : "electionDetail.emailsSent", { count: result.emailsSent })}
+      {kind === "duplicate"
+        ? t("electionDetail.duplicateText")
+        : t(simulated ? "electionDetail.emailsSimulated" : "electionDetail.emailsSent", { count: result.emailsSent })}
     </Notice>
   );
 }
 
-function MotionResults({ motion }) {
+/**
+ * Results of one motion. While the election is open the server sends no tallies (secret
+ * ballot): only the options and the integrity check are shown.
+ */
+function MotionResults({ motion, available }) {
   const { t, locale } = useLanguage();
-  const leadingWeight = Math.max(0, ...motion.options.map((option) => option.weight));
+  const leadingWeight = available ? Math.max(0, ...motion.options.map((option) => option.weight)) : 0;
   return (
     <div className="card app-card h-100">
       <div className="card-body">
@@ -44,7 +50,18 @@ function MotionResults({ motion }) {
           </div>
         </div>
 
-        {motion.options.map((option) => {
+        {!available && (
+          <ul className="list-unstyled small mb-0 d-grid gap-1">
+            {motion.options.map((option) => (
+              <li key={option.id} className="d-flex align-items-center gap-2">
+                <Icon name="lock" size={14} className="text-body-secondary" />
+                <span className="text-break-all">{optionLabel(t, option.label)}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {available && motion.options.map((option) => {
           const leading = leadingWeight > 0 && option.weight === leadingWeight;
           return (
             <div key={option.id} className={`result-row ${leading ? "leading" : ""}`}>
@@ -66,7 +83,7 @@ function MotionResults({ motion }) {
         })}
 
         <div className="d-flex flex-wrap gap-2 mt-3 pt-3 border-top">
-          <Badge tone="secondary">{t("electionDetail.totalWeight", { value: formatNumber(motion.totalWeight, locale) })}</Badge>
+          {available && <Badge tone="secondary">{t("electionDetail.totalWeight", { value: formatNumber(motion.totalWeight, locale) })}</Badge>}
           {motion.integrity.ok ? (
             <Badge tone="success" icon="shield">{t("electionDetail.integrityOk")}</Badge>
           ) : (
@@ -199,7 +216,6 @@ function VotersSection({ electionId, open, refreshKey, onResent }) {
                   <td className="d-none d-md-table-cell text-end">{formatNumber(voter.weight, locale)}</td>
                   <td>
                     {voterStatus(voter, t)}
-                    {voter.votedAt && <div className="small text-body-secondary mt-1">{formatDateTime(voter.votedAt, locale)}</div>}
                   </td>
                   <td className="d-none d-lg-table-cell small">{t(`electionDetail.invitation.${voter.invitationStatus}`)}</td>
                   <td className="text-end">
@@ -257,6 +273,7 @@ function VotersSection({ electionId, open, refreshKey, onResent }) {
 
 function AddVotersModal({ open, electionId, onClose, onAdded }) {
   const { request } = useAuth();
+  const checkSeq = useRef(0);
   const { t, language } = useLanguage();
   const [file, setFile] = useState(null);
   const [check, setCheck] = useState({ status: "idle", result: null, error: null });
@@ -272,6 +289,7 @@ function AddVotersModal({ open, electionId, onClose, onAdded }) {
   };
 
   const onFile = async (selected) => {
+    const sequence = ++checkSeq.current;
     setFile(selected);
     setError(null);
     if (!selected) return setCheck({ status: "idle", result: null, error: null });
@@ -280,8 +298,10 @@ function AddVotersModal({ open, electionId, onClose, onAdded }) {
     form.set("votersCsv", selected);
     try {
       const result = await request("/api/admin/csv/validate", { method: "POST", form });
+      if (sequence !== checkSeq.current) return;
       setCheck({ status: result.errors.length ? "invalid" : "valid", result, error: null });
     } catch (caught) {
+      if (sequence !== checkSeq.current) return;
       setCheck({ status: "invalid", result: null, error: caught });
     }
   };
@@ -347,7 +367,9 @@ export default function ElectionDetailView() {
   const location = useLocation();
   const navigate = useNavigate();
 
-  const [notice, setNotice] = useState(() => (location.state?.created ? { kind: "created", result: location.state.created } : null));
+  const [notice, setNotice] = useState(() => (location.state?.created
+      ? { kind: location.state.created.duplicate ? "duplicate" : "created", result: location.state.created }
+      : null));
   const [confirmStatus, setConfirmStatus] = useState(false);
   const [statusBusy, setStatusBusy] = useState(false);
   const [actionError, setActionError] = useState(null);
@@ -466,10 +488,15 @@ export default function ElectionDetailView() {
       <div className="row g-4">
         <div className="col-12 col-xl-8">
           <Section title={t("electionDetail.results")} description={t("electionDetail.resultsDescription")}>
+            {!election.resultsAvailable && (
+              <Notice variant="info" title={t("electionDetail.resultsHiddenTitle")}>
+                {t("electionDetail.resultsHiddenText")}
+              </Notice>
+            )}
             <div className="row g-3">
               {election.motions.map((motion) => (
                 <div key={motion.id} className={election.motions.length > 1 ? "col-12 col-lg-6" : "col-12"}>
-                  <MotionResults motion={motion} />
+                  <MotionResults motion={motion} available={election.resultsAvailable} />
                 </div>
               ))}
             </div>

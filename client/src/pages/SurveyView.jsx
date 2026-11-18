@@ -331,18 +331,23 @@ export default function SurveyView() {
             </div>
             <ProgressBar value={progress.completionPercentage} tone="success" label={t("survey.progress.title")} height={10} />
 
-            <h3 className="h6 mt-4 mb-2">{t("survey.progress.byCategory")}</h3>
-            <div className="d-grid gap-2">
-              {Object.entries(progress.byCategory).map(([category, item]) => (
-                <div key={category}>
-                  <div className="d-flex justify-content-between small">
-                    <span>{categoryLabel(t, category)}</span>
-                    <span className="text-body-secondary">{item.answered}/{item.total}</span>
-                  </div>
-                  <ProgressBar value={item.percentage} label={categoryLabel(t, category)} height={6} />
+            {/* The server only sends the breakdown to the recipient and admins. */}
+            {Object.keys(progress.byCategory).length > 0 && (
+              <>
+                <h3 className="h6 mt-4 mb-2">{t("survey.progress.byCategory")}</h3>
+                <div className="d-grid gap-2">
+                  {Object.entries(progress.byCategory).map(([category, item]) => (
+                    <div key={category}>
+                      <div className="d-flex justify-content-between small">
+                        <span>{categoryLabel(t, category)}</span>
+                        <span className="text-body-secondary">{item.answered}/{item.total}</span>
+                      </div>
+                      <ProgressBar value={item.percentage} label={categoryLabel(t, category)} height={6} />
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
+              </>
+            )}
 
             {fullView && Object.keys(progress.pendingByOwner).length > 0 && (
               <>
