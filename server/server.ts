@@ -9,7 +9,7 @@
  * the former JSON files (read-only) -> mailer -> auth -> HTTP app.
  */
 import "@std/dotenv/load";
-import { loadConfig } from "./config.ts";
+import { loadConfig, productionProblems } from "./config.ts";
 import { openDatabase } from "./db/database.ts";
 import { findIntegrityIssues, importLegacyData } from "./db/legacyImport.ts";
 import { createFileStore } from "./context.ts";
@@ -19,6 +19,13 @@ import { isSurveyParticipant } from "./services/surveyService.ts";
 import { createApp } from "./app.ts";
 
 const config = loadConfig();
+const problems = productionProblems(config);
+if (problems.length > 0) {
+  // Names of the missing settings only; values are never printed.
+  console.error("[config] The server cannot start safely on this host:");
+  for (const problem of problems) console.error(`[config] - ${problem}`);
+  Deno.exit(1);
+}
 const db = await openDatabase({ url: config.databaseUrl || undefined, dataDir: config.databasePath });
 const files = createFileStore(config);
 const mailer = createMailer();

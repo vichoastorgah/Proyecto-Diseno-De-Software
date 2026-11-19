@@ -4,10 +4,21 @@ import { GoogleLogin, GoogleOAuthProvider } from "@react-oauth/google";
 import { useAuth } from "../context/useAuth";
 import { useLanguage } from "../context/useLanguage";
 import { GOOGLE_CLIENT_ID } from "../config";
-import { ErrorNotice, Notice } from "../components/ui/Feedback";
+import { apiRequest } from "../api/client";
+import { useResource } from "../hooks/useResource";
+import { ErrorNotice, LoadingState, Notice } from "../components/ui/Feedback";
 import Icon from "../components/ui/Icon";
 
 const FEATURES = ["login.features.elections", "login.features.weighted", "login.features.surveys", "login.features.security"];
+
+/**
+ * Google OAuth client id: from the build (VITE_GOOGLE_CLIENT_ID, local development) or, when the
+ * same image serves every environment, from the API at runtime (`/api/config`, public value).
+ */
+function fetchGoogleClientId(signal) {
+  if (GOOGLE_CLIENT_ID) return Promise.resolve(GOOGLE_CLIENT_ID);
+  return apiRequest("/api/config", { signal }).then((config) => config.googleClientId || "");
+}
 
 /** Google SSO sign-in. Identity and role are decided by the server. */
 export default function LoginView() {
@@ -18,6 +29,7 @@ export default function LoginView() {
   const [signingIn, setSigningIn] = useState(false);
   const [error, setError] = useState(null);
   const [googleFailed, setGoogleFailed] = useState(false);
+  const { data: clientId, error: configError, loading: loadingConfig, reload: reloadConfig } = useResource(fetchGoogleClientId);
 
   const target = location.state?.from;
   if (user) return <Navigate replace to={target || (isAdmin ? "/admin" : "/surveys")} />;
@@ -68,18 +80,20 @@ export default function LoginView() {
                 <p className="text-body-secondary mb-4">{t("login.subtitle")}</p>
 
                 {sessionExpired && !error && <Notice variant="warning">{t("login.sessionExpired")}</Notice>}
-                {!GOOGLE_CLIENT_ID && <Notice variant="danger">{t("login.missingClientId")}</Notice>}
+                {!loadingConfig && !configError && !clientId && <Notice variant="danger">{t("login.missingClientId")}</Notice>}
+                <ErrorNotice error={configError} onRetry={reloadConfig} />
                 {googleFailed && <Notice variant="danger">{t("login.googleFailed")}</Notice>}
                 <ErrorNotice error={error} />
 
+                {loadingConfig && !clientId && <LoadingState compact />}
                 {signingIn ? (
                   <div className="d-flex align-items-center gap-2 py-2" role="status">
                     <span className="spinner-border spinner-border-sm" aria-hidden="true" />
                     {t("login.signingIn")}
                   </div>
                 ) : (
-                  GOOGLE_CLIENT_ID && (
-                    <GoogleOAuthProvider clientId={GOOGLE_CLIENT_ID}>
+                  clientId && (
+                    <GoogleOAuthProvider clientId={clientId}>
                       <div className="d-flex">
                         <GoogleLogin
                           onSuccess={handleSuccess}

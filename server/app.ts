@@ -3,7 +3,7 @@
  * Builds the Oak application from explicit dependencies, so the same app runs in
  * production (`server.ts`) and in the integration tests (`app.handle(request)`).
  */
-import { Application, isHttpError, Router } from "@oak/oak";
+import { Application, type Context, isHttpError, Router, send } from "@oak/oak";
 import { AppError } from "./errors.ts";
 import type { AppDeps } from "./http/helpers.ts";
 import { registerAuthRoutes } from "./http/authRoutes.ts";
@@ -30,8 +30,36 @@ function createRateLimiter(limitPerMinute: number) {
   };
 }
 
+/**
+ * Serves the built frontend (single-service deployment). Real files are returned as is;
+ * any other non-API path gets `index.html` so client-side routes such as `/vote?token=...`
+ * work on reload. Hashed assets are cached for a year, the HTML is always revalidated.
+ */
+async function serveFrontend(ctx: Context, root: string): Promise<boolean> {
+  const path = ctx.request.url.pathname;
+  const method = ctx.request.method;
+  if (path === "/api" || path.startsWith("/api/") || (method !== "GET" && method !== "HEAD")) return false;
+
+  const headers = ctx.response.headers;
+  // Google Sign-In needs the page origin as referrer; the path/query (vote token) is never sent cross-origin.
+  headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
+  try {
+    await send(ctx, path, { root, index: "index.html" });
+    headers.set("Cache-Control", path.startsWith("/assets/") ? "public, max-age=31536000, immutable" : "no-cache");
+    return true;
+  } catch {
+    // A missing file with an extension (e.g. /assets/old.js) is a real 404, not an app route.
+    if (/\.[a-z0-9]+$/i.test(path)) return false;
+    await send(ctx, "/index.html", { root });
+    headers.set("Cache-Control", "no-cache");
+    return true;
+  }
+}
+
 export function createApp(deps: AppDeps): Application {
-  const app = new Application();
+  // Behind Render's proxy the client address comes from X-Forwarded-For; otherwise every
+  // visitor would share the proxy's IP (and a single rate-limit bucket).
+  const app = new Application({ proxy: deps.config.ephemeralDisk });
   const allowRequest = createRateLimiter(deps.rateLimitPerMinute);
 
   // Error handler first so it also covers CORS/limiter failures. Internals never leak.
@@ -109,6 +137,11 @@ export function createApp(deps: AppDeps): Application {
   router.get("/api/health", (ctx) => {
     ctx.response.body = { status: "ok" };
   });
+  // Public, non-secret settings the frontend reads at runtime (one image for any environment).
+  router.get("/api/config", (ctx) => {
+    ctx.response.headers.set("Cache-Control", "public, max-age=300");
+    ctx.response.body = { googleClientId: deps.config.googleClientId };
+  });
   registerAuthRoutes(router, deps);
   registerAdminRoutes(router, deps);
   registerVotingRoutes(router, deps);
@@ -116,6 +149,13 @@ export function createApp(deps: AppDeps): Application {
 
   app.use(router.routes());
   app.use(router.allowedMethods());
+
+  if (deps.config.staticDir) {
+    const root = deps.config.staticDir;
+    app.use(async (ctx, next) => {
+      if (!await serveFrontend(ctx, root)) await next();
+    });
+  }
 
   return app;
 }
