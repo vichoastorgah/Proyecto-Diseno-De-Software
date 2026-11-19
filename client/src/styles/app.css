@@ -159,7 +159,10 @@ body {
   overflow-wrap: anywhere;
 }
 
-.page-title:focus {
+/* Headings receive focus programmatically after navigation (screen readers announce the
+   page); they are not interactive, so no focus ring is drawn. */
+.page-title:focus,
+h1[tabindex="-1"]:focus {
   outline: none;
 }
 
