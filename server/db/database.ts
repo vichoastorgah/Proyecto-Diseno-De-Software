@@ -116,7 +116,36 @@ function wrapPostgres(client: PostgresClient | PostgresTx, root: PostgresClient,
   return db;
 }
 
+/**
+ * Checks the shape of a connection string WITHOUT ever echoing it: the value contains the
+ * database password, and driver errors such as "Invalid URL: '<value>'" would leak it to logs.
+ */
+export function assertConnectionString(url: string): void {
+  let parsed: URL | null = null;
+  try {
+    parsed = new URL(url);
+  } catch {
+    parsed = null;
+  }
+  const problems: string[] = [];
+  if (!parsed) problems.push("it is not a URL");
+  else {
+    if (parsed.protocol !== "postgres:" && parsed.protocol !== "postgresql:") problems.push("it must start with postgresql://");
+    if (!parsed.hostname) problems.push("the host is missing");
+    if (!parsed.username) problems.push("the user is missing");
+    if (!parsed.password) problems.push("the password is missing");
+    if (/[[\]]/.test(decodeURIComponent(parsed.password))) problems.push("the [YOUR-PASSWORD] placeholder was not replaced");
+  }
+  if (problems.length > 0) {
+    throw new Error(
+      `DATABASE_URL is invalid (${problems.join("; ")}). Expected the full Supabase connection string: ` +
+        "postgresql://<user>:<password>@<host>:<port>/postgres?sslmode=require (value not shown for security).",
+    );
+  }
+}
+
 function openPostgres(url: string): Db {
+  assertConnectionString(url);
   const client = postgres(url, {
     max: 5,
     // Supabase's transaction pooler (port 6543) does not support prepared statements.

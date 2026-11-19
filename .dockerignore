@@ -1,9 +1,8 @@
-# Only deno.json, deno.lock and server/ are needed by the image.
+# Only deno.json, deno.lock, server/ and the client sources are needed by the image.
 .git
 .github
 .vscode
 .claude
-client
 docs
 samples
 *.md
@@ -11,6 +10,8 @@ samples
 # Secrets and personal data must never reach an image.
 .env
 .env.*
+**/.env
+**/.env.*
 *.csv
 server/voters.json
 server/motions.json
@@ -18,4 +19,8 @@ server/data.json
 server/storage
 server/uploads
 server/tests
+
+# Built or installed inside the image.
 node_modules
+**/node_modules
+client/dist

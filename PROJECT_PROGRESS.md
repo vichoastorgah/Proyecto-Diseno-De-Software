@@ -7,10 +7,10 @@ Branch: `feature/professional-upgrade` (tracks `origin/feature/professional-upgr
 
 | | |
 |---|---|
-| **Last completed** | PostgreSQL/Supabase-ready persistence + fixes from an independent code review, verified (41 tests, driver smoke test, browser) |
-| **In progress** | Documentation of the deployment (`docs/DESPLIEGUE.md`) |
-| **Next** | Owner merged into `main` and created Supabase; next: Render (API container) and Vercel, then production checks |
-| **Blocked / needs the owner** | Hosting accounts and secrets; real Google sign-in check; Git history decision |
+| **Last completed** | Single-service Render image (frontend + API) verified end to end in Docker with real PostgreSQL (`14f7f48`) |
+| **In progress** | Public deployment on Render: owner updates env vars and merges; then public URL verification |
+| **Next** | Production checklist from another device (guide section 5), then remaining polish and weekly README updates |
+| **Blocked / needs the owner** | Reset the Supabase DB password (exposed in a log/chat), fix `DATABASE_URL` in Render, merge into `main`, add the Render URL to Google; Git history decision |
 
 ## Commits on this branch (all pushed)
 
@@ -145,6 +145,17 @@ reserved `example.com` domain).
 
 ---
 
+## Deployment log (Render)
+
+| Step | Result |
+|---|---|
+| Deno Deploy | Not possible: new sign-ups closed (shuts down April 2027) |
+| Render, first attempt (API-only image) | Image built and container started; crashed at startup with `Invalid URL`: `DATABASE_URL` contained only part of the value (not a `postgresql://` URI). The driver echoed the value to the logs; the owner should reset the DB password |
+| Fix `70a4428` | Connection string validated first; error explains the format without printing the value |
+| Fix `14f7f48` | Single service: React build served by the API; `RENDER_EXTERNAL_URL` as public URL; startup refuses missing Supabase/Google/admin settings; proxy-aware rate limit; `render.yaml` |
+| Local production rehearsal (Docker) | PASS: real PostgreSQL 17, Storage stand-in, restart keeps data, 10 simultaneous ballots → 1 accepted, results/integrity, attachment download, forged session 401, Chrome: login (client id from `/api/config`), admin dashboard, phone ballot; refusal mode prints names only |
+| Public URL | Pending owner configuration (see Status) |
+
 ## Security notes and pending risks
 
 - **Git history:** personal data (4 real email addresses, a RUT in a file name, 6 voting tokens) remains in earlier
@@ -157,8 +168,11 @@ reserved `example.com` domain).
 
 ## Pending tasks
 
-- [ ] Owner: Supabase project, bucket, keys; Render web service (Docker); Vercel project; Google origin (see `docs/DESPLIEGUE.md`).
-- [ ] Production checklist (guide section 6), including simultaneous ballots against Supabase.
+- [x] Supabase project, bucket and keys (owner).
+- [x] Render web service created (owner); first deploy built but stopped: `DATABASE_URL` was not a connection string.
+- [ ] Owner: reset the DB password, set the full `DATABASE_URL` and the variables of guide section 2, merge into `main`.
+- [ ] Owner: add `https://<service>.onrender.com` to the Google OAuth origins.
+- [ ] Verify the public URL (health, frontend, SPA routes, config) and run the production checklist (guide section 5).
 - [ ] Owner: real Google sign-in; optionally SMTP.
 - [ ] Owner: decision about the Git history with personal data.
 - [ ] Weekly: commit + README "What changed" section.

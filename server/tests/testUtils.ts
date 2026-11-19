@@ -73,6 +73,8 @@ export async function createTestEnv(overrides: Partial<AppConfig> = {}, failFor:
     voteBaseUrl: "http://localhost:5173/vote",
     appBaseUrl: "http://localhost:5173",
     tokenTtlHours: 48,
+    staticDir: "",
+    ephemeralDisk: false,
     defaultEmailLanguage: "en",
     ...overrides,
   };

@@ -1,139 +1,117 @@
-# Guía de despliegue: Vercel + Supabase + Render
+# Guía de despliegue: Render + Supabase
 
 Arquitectura publicada (criterio "Despliegue online e integración" de la rúbrica):
 
 ```
-Navegador ──► Vercel (frontend React, estático)
-                 │  VITE_API_BASE_URL
-                 ▼
-            Render (contenedor Docker con la API Deno + Oak, sin estado)
-                 │  DATABASE_URL            │  SUPABASE_URL + clave secreta
-                 ▼                          ▼
-        Supabase Postgres            Supabase Storage (bucket privado "attachments")
+Navegador ──► Render: un solo servicio Docker  ──►  Supabase Postgres (datos)
+              (React compilado + API Deno/Oak)  ──►  Supabase Storage (bucket privado "attachments")
+              https://<servicio>.onrender.com
 ```
 
-- El frontend **nunca** recibe claves de Supabase: solo habla con la API.
-- Las tablas tienen **Row Level Security activado sin políticas**: la API REST pública de Supabase no puede
-  leerlas aunque alguien conozca la URL del proyecto y la clave pública. La API se conecta como dueña de las tablas.
-- Producción parte con la base de datos vacía: los datos locales (JSON antiguos, base local) **no se suben**.
+- **Una sola URL pública** sirve la aplicación y la API (`/api/...`): no hay CORS entre dominios y Google SSO
+  necesita un único origen autorizado.
+- El contenedor **no guarda nada en su disco**: votaciones, votantes, cuestionarios y adjuntos quedan en Supabase.
+  En Render la API **se niega a arrancar** si falta la base de datos o el almacenamiento de Supabase (así nunca se
+  pierden datos en un reinicio).
+- El navegador **nunca** recibe claves de Supabase. Las tablas tienen **Row Level Security activado sin políticas**:
+  la API REST pública de Supabase no puede leerlas.
+- Producción parte con la base vacía: los datos locales (JSON antiguos, base local) **no se suben**.
+- `Dockerfile`: compila React con `node:22.23.3-alpine` y ejecuta la API con `denoland/deno:2.9.7` como usuario sin
+  privilegios. `.dockerignore` deja fuera `.env`, CSV, bases locales y datos.
+- `render.yaml`: la misma configuración como *Blueprint* (infraestructura como código).
 
-Tiempo estimado: 45–60 minutos. Todos los servicios tienen plan gratuito.
+Probado localmente con Docker antes de publicar: PostgreSQL 17 real, reinicio del contenedor sin pérdida de datos,
+10 votos simultáneos con el mismo enlace (se acepta 1) y votación completa en un navegador de celular.
 
 ---
 
-## 0. ¿Qué rama se publica?
+## 1. Supabase (ya creado)
 
-Render y Vercel publican la rama **`main`** (ya fusionada). Cada *push* a `main` vuelve a desplegar ambos.
-
-## 1. Supabase (base de datos y archivos)
-
-1. Crear una cuenta en <https://supabase.com> y un proyecto nuevo.
-   - Región sugerida: **South America (São Paulo)**.
-   - Guarda la contraseña de la base de datos en un lugar seguro.
-2. **Cadena de conexión:** botón **Connect** (arriba) → **Session pooler** (compatible con IPv4).
-   Copia la URI, reemplaza `[YOUR-PASSWORD]` y agrega `?sslmode=require` al final:
+1. **Cambia la contraseña de la base de datos** si alguna vez quedó a la vista (chat, capturas, logs):
+   **Project Settings → Database → Reset database password**. Usa una sin símbolos (`@ # / ? %`) para evitar
+   problemas en la URL.
+2. **Cadena de conexión (`DATABASE_URL`)**: botón **Connect** (arriba) → **Session pooler** → copia la URI
+   **completa**. Reemplaza `[YOUR-PASSWORD]` (incluidos los corchetes) por tu contraseña y agrega
+   `?sslmode=require` al final. Debe verse así (todo en una línea):
    ```
    postgresql://postgres.<ref>:<password>@aws-0-sa-east-1.pooler.supabase.com:5432/postgres?sslmode=require
    ```
-   Este valor es `DATABASE_URL`. (El *transaction pooler*, puerto 6543, también funciona: la API desactiva los
-   *prepared statements*.) Si la contraseña tiene símbolos como `@`, `#` o `/`, cámbiala por una sin símbolos o
-   codifícalos en la URL.
-3. **Storage:** menú **Storage** → **New bucket** → nombre `attachments` → **Public bucket desactivado**.
-4. **Claves:** **Project Settings → API Keys**:
-   - `Project URL` (en *Data API* o en el botón *Connect*) → `SUPABASE_URL`, por ejemplo `https://abcd.supabase.co`.
-   - Una **secret key** (`sb_secret_…`; si no hay, crea una con *Create new secret key*) → `SUPABASE_SERVICE_ROLE_KEY`.
-     La API también acepta la clave antigua `service_role` (JWT), que Supabase dejará de ofrecer a fines de 2026.
-     Es secreta: solo va en Render, nunca en Vercel, en el chat ni en el repositorio.
-5. No hay que crear tablas a mano: la API aplica las migraciones al arrancar (tabla `schema_migrations`).
+   Si solo pegas la contraseña o falta `postgresql://`, la API se detiene con
+   `DATABASE_URL is invalid (...)` en los *Logs* (sin mostrar el valor).
+3. **Storage**: bucket `attachments`, **privado**.
+4. **Claves**: **Project Settings → API Keys** → una **secret key** (`sb_secret_…`) → `SUPABASE_SERVICE_ROLE_KEY`.
+   `SUPABASE_URL` es `https://<ref>.supabase.co`.
 
-## 2. Render (API)
+## 2. Render (aplicación completa)
 
-> Deno Deploy dejó de aceptar cuentas nuevas (cierra en abril de 2027), por eso la API se publica como contenedor.
-> El `Dockerfile` de la raíz usa la imagen oficial `denoland/deno:2.9.7`, instala las dependencias, corre con un
-> usuario sin privilegios y no incluye `client/`, `.env`, CSV ni datos locales (`.dockerignore`). Se probó localmente
-> con Docker, con el puerto inyectado y conectado a Postgres por red.
+Puedes **reutilizar el Web Service que ya creaste** (opción A) o crear uno nuevo desde el Blueprint (opción B).
 
-1. Entrar a <https://render.com> → **Get Started** → iniciar sesión con **GitHub**.
-2. **+ New → Web Service** → conectar el repositorio `Proyecto-Diseno-De-Software` (si no aparece, *Configure account*
-   y dar acceso al repositorio).
-3. Configuración:
-   - **Branch:** `main` · **Language/Runtime:** `Docker` (lo detecta por el `Dockerfile`) · **Root Directory:** vacío.
-   - **Region:** `Virginia (US East)` (la más cercana a Supabase São Paulo).
-   - **Instance Type:** `Free`.
-   - **Advanced → Health Check Path:** `/api/health`.
-4. **Environment Variables** (Render define `PORT` solo; no lo agregues):
+### Opción A: el servicio existente
+
+1. En Render → tu servicio → **Settings**: *Branch* `main`, *Runtime* Docker, *Health Check Path* `/api/health`.
+2. **Environment** → deja exactamente estas variables (Render define `PORT`, `RENDER` y `RENDER_EXTERNAL_URL` solo;
+   **no** agregues `ALLOWED_ORIGIN`, `APP_BASE_URL` ni `VOTE_BASE_URL`, se calculan con la URL pública):
 
    | Variable | Valor |
    |---|---|
-   | `DATABASE_URL` | URI del paso 1.2 (Session pooler, con `?sslmode=require`) |
-   | `SUPABASE_URL` | URL del proyecto |
+   | `DATABASE_URL` | la URI completa del paso 1.2 |
+   | `SUPABASE_URL` | `https://<ref>.supabase.co` |
    | `SUPABASE_SERVICE_ROLE_KEY` | `sb_secret_…` |
    | `SUPABASE_BUCKET` | `attachments` |
-   | `SESSION_SECRET` | genera uno en tu terminal: `deno eval "console.log(crypto.randomUUID()+crypto.randomUUID())"` |
-   | `GOOGLE_CLIENT_ID` | el mismo del frontend |
-   | `ADMIN_EMAILS` | tu correo de Google (administrador) |
+   | `GOOGLE_CLIENT_ID` | el mismo de tu `.env` local |
+   | `ADMIN_EMAILS` | tu correo de Google (separa varios con comas) |
+   | `SESSION_SECRET` | 64 caracteres aleatorios: `deno eval "console.log(crypto.randomUUID()+crypto.randomUUID())"` |
    | `DEFAULT_EMAIL_LANGUAGE` | `es` |
-   | `ALLOW_DEMO_SURVEY_IDENTITY` | `true` solo si quieres usar "Actuar como" en la demo |
-   | `ALLOWED_ORIGIN`, `APP_BASE_URL` | URL de Vercel, ej. `https://<proyecto>.vercel.app` (se completan en el paso 3) |
-   | `VOTE_BASE_URL` | URL de Vercel + `/vote` (paso 3) |
+   | `ALLOW_DEMO_SURVEY_IDENTITY` | `true` (permite "Actuar como" en la demo de cuestionarios) |
 
-5. **Create Web Service**. La primera compilación tarda unos minutos. La URL queda como `https://<nombre>.onrender.com`.
-6. Comprobar `https://<nombre>.onrender.com/api/health` → `{"status":"ok"}`. En **Logs** debe aparecer
-   `[db] Driver: postgres. [files] Store: supabase.`
-7. Plan gratuito: el servicio se **suspende tras 15 minutos sin uso** y la primera petición siguiente tarda ~30–60 s.
-   Antes de una demo abre `/api/health` una vez para "despertarlo".
-8. Si cambias variables, Render vuelve a desplegar automáticamente (o usa *Manual Deploy → Deploy latest commit*).
+3. **Save, rebuild, and deploy** (o *Manual Deploy → Deploy latest commit*).
 
-## 3. Vercel (frontend)
+### Opción B: Blueprint
 
-1. Entrar a <https://vercel.com> con GitHub → **Add New… → Project** → importar el repositorio.
-2. **Root Directory:** `client`. Framework: **Vite** (build `npm run build`, salida `dist`).
-3. Variables de entorno:
+**New → Blueprint** → elegir el repositorio → Render lee `render.yaml`, pide los valores marcados como secretos y
+genera `SESSION_SECRET`. (Si usas esta opción, elimina el servicio antiguo para no tener dos.)
 
-   | Variable | Valor |
-   |---|---|
-   | `VITE_API_BASE_URL` | `https://<nombre>.onrender.com` (sin `/` final) |
-   | `VITE_GOOGLE_CLIENT_ID` | el client id de Google |
+### Comprobar
 
-4. **Deploy**. Copia la URL de producción (`https://<proyecto>.vercel.app`) y complétala en Render
-   (`ALLOWED_ORIGIN`, `APP_BASE_URL`, `VOTE_BASE_URL`); Render redespliega solo.
-5. `client/vercel.json` ya redirige todas las rutas a `index.html`, para que funcionen enlaces como `/vote?token=…`.
-6. Si cambias variables de Vercel, vuelve a desplegar (Vite las inserta al compilar).
+- **Logs**: deben aparecer `[db] Driver: postgres. [files] Store: supabase.` y `Server listening…`.
+- `https://<servicio>.onrender.com/api/health` → `{"status":"ok"}`.
+- Plan gratuito: el servicio se **suspende tras 15 minutos sin uso** y la siguiente visita tarda ~30–60 s.
+  Antes de una demo abre la URL una vez para "despertarlo".
 
-## 4. Google Cloud (SSO)
+## 3. Google Cloud (SSO)
 
-En **APIs & Services → Credentials → tu OAuth client (Web)** agrega en *Authorized JavaScript origins*:
-`https://<proyecto>.vercel.app` (además de `http://localhost:5173` para desarrollo). El cambio puede tardar unos minutos.
+**APIs & Services → Credentials → tu OAuth client (Web) → Authorized JavaScript origins** → agrega
+`https://<servicio>.onrender.com` (sin `/` final; mantén `http://localhost:5173` para desarrollo). Puede tardar
+unos minutos en aplicarse.
 
-## 5. Correos en producción
+## 4. Correos en producción
 
-- Sin `SMTP_USER`/`SMTP_PASS` los correos se **simulan**: el mensaje completo (con el enlace de votación) aparece
-  en los *logs* de Render. Sirve para la demo.
-- Para envío real se pueden configurar `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`
-  (Gmail con *contraseña de aplicación*). **Pendiente de verificar en Render:** los planes gratuitos de algunos
-  proveedores bloquean los puertos SMTP salientes. Si no, los envíos quedarán como "Falló el envío" y habría que usar un servicio
-  de correo por HTTP (cambio acotado en `server/services/emailService.ts`).
+- Sin `SMTP_USER`/`SMTP_PASS` los correos se **simulan**: el mensaje completo (con el enlace de votación) aparece en
+  los *Logs* de Render. Sirve para la demo.
+- Para envío real: `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` (Gmail con *contraseña de
+  aplicación*). **Pendiente de verificar**: el plan gratuito de Render puede bloquear puertos SMTP salientes; si los
+  envíos quedan como "Falló el envío", se necesitaría un servicio de correo por HTTP (cambio acotado en
+  `server/services/emailService.ts`).
 
-## 6. Lista de verificación en producción
+## 5. Lista de verificación en producción (desde otro dispositivo)
 
-1. `/api/health` responde `ok`.
-2. Iniciar sesión con Google en la URL de Vercel → llegas al panel como administrador.
-3. Crear una votación con `samples/voters.example.csv` y un PDF → el adjunto aparece en el bucket `attachments`.
-4. Abrir un enlace de votación (desde los *logs* o el correo), votar, recargar → "Ya votaste".
-5. Abrir el mismo enlace en dos pestañas y votar casi a la vez → solo una cuenta.
-6. Cerrar la votación → resultados ponderados con "Integridad verificada".
-7. Crear un cuestionario, delegar y responder.
-8. En Supabase → **Table Editor**: las tablas existen y `ballots` no tiene datos de votantes.
-9. Cambiar ES/EN y revisar en el celular.
+1. Abrir `https://<servicio>.onrender.com` en el celular → página de inicio de sesión con el botón de Google.
+2. Iniciar sesión con la cuenta de `ADMIN_EMAILS` → panel de administración.
+3. Crear una votación con `samples/voters.example.csv` y un PDF → el archivo aparece en el bucket `attachments`.
+4. Copiar un enlace de votación desde los *Logs* de Render, abrirlo en otro dispositivo, votar, recargar → "Ya votaste".
+5. Cerrar la votación → resultados ponderados con "Integridad verificada".
+6. Crear un cuestionario, delegar y responder ("Actuar como").
+7. **Render → Manual Deploy → Restart service** y comprobar que todo sigue ahí (persistencia).
+8. Cambiar ES/EN.
 
 ## Problemas frecuentes
 
 | Síntoma | Causa probable |
 |---|---|
-| "No se pudo conectar con el servidor" | `VITE_API_BASE_URL` incorrecta, o `ALLOWED_ORIGIN` no coincide exactamente con la URL de Vercel |
+| `DATABASE_URL is invalid (...)` en los Logs | No es la URI completa (falta `postgresql://`, usuario, host o contraseña) o quedó `[YOUR-PASSWORD]` |
+| `[config] The server cannot start safely…` | Falta alguna de las variables listadas en ese mensaje |
+| Error de conexión/contraseña al arrancar | Contraseña cambiada en Supabase pero no en `DATABASE_URL`, o símbolos sin codificar |
+| Google muestra "origin is not allowed" | Falta `https://<servicio>.onrender.com` en *Authorized JavaScript origins* |
 | `403 UNAUTHORIZED_USER` al entrar | Tu correo no está en `ADMIN_EMAILS` |
-| Google muestra "origin is not allowed" | Falta la URL de Vercel en *Authorized JavaScript origins* |
-| Error 500 al crear una votación con adjunto | Falta `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY` o el bucket no existe |
-| La API responde 502 o no arranca | Revisa los *Logs* de Render: `DATABASE_URL` mal copiada (contraseña) o falta `?sslmode=require` |
-| La primera carga tarda casi un minuto | El plan gratuito de Render estaba suspendido; es normal |
-| Las sesiones se cierran al reiniciar la API | `SESSION_SECRET` vacío, corto o con el texto de ejemplo |
+| Error al crear una votación con adjunto | `SUPABASE_SERVICE_ROLE_KEY` incorrecta o el bucket `attachments` no existe |
+| La primera carga tarda casi un minuto | El plan gratuito estaba suspendido; es normal |
