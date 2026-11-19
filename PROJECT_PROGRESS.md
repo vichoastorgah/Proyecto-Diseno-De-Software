@@ -8,9 +8,9 @@ Branch: `feature/professional-upgrade` (tracks `origin/feature/professional-upgr
 | | |
 |---|---|
 | **Last completed** | **Public deployment live: https://proyecto-diseno-de-software.onrender.com** (verified from outside: API, SPA routes, assets, headers, CORS, Google button accepts the origin) |
-| **In progress** | Owner's production checklist from a phone (sign-in, vote, results, survey, restart) |
-| **Next** | Production checklist from another device (guide section 5), then remaining polish and weekly README updates |
-| **Blocked / needs the owner** | Google sign-in with the owner's account on the public URL (OAuth app in Testing: add test users); Git history decision |
+| **In progress** | — (feature-complete; weekly maintenance only) |
+| **Next** | Weekly commit + README update until the end of the semester; defense preparation (`docs/GUIA_DEFENSA.md`) |
+| **Blocked / needs the owner** | Add the evaluator as a Google *Test user* if they will sign in; Git history decision |
 
 ## Commits on this branch (all pushed)
 
@@ -155,6 +155,7 @@ reserved `example.com` domain).
 | Fix `14f7f48` | Single service: React build served by the API; `RENDER_EXTERNAL_URL` as public URL; startup refuses missing Supabase/Google/admin settings; proxy-aware rate limit; `render.yaml` |
 | Local production rehearsal (Docker) | PASS: real PostgreSQL 17, Storage stand-in, restart keeps data, 10 simultaneous ballots → 1 accepted, results/integrity, attachment download, forged session 401, Chrome: login (client id from `/api/config`), admin dashboard, phone ballot; refusal mode prints names only |
 | Owner configuration | `DATABASE_URL` needed three attempts: only the password (fixed by validation `70a4428`), `[ ]` left around the password (detected without echoing it), example project id copied instead of the real one (`tenant/user not found`). Then started OK |
+| Owner checks (2026-11-18) | PASS: Google sign-in and main flows on a computer, a phone and a tablet |
 | Public URL (2026-11-18) | PASS: `/api/health` 200 in 0.56 s; `/api/config` serves a client id with the expected format; `/`, `/login`, `/vote?token=…`, `/admin`, `/surveys/…` return the app; assets cached 1 year; no session 401; wrong method 405; invalid token 404; missing asset 404; `nosniff`, `DENY`, `strict-origin-when-cross-origin`; CORS preflight from the public origin allowed; headless Chrome: Google button rendered with no origin error, phone ballot blocked state, no overflow, empty console |
 
 ## Security notes and pending risks
@@ -174,8 +175,10 @@ reserved `example.com` domain).
 - [x] Owner: DB password reset, full `DATABASE_URL`, variables of guide section 2, merge into `main`.
 - [x] Owner: Render URL added to the Google OAuth origins (app stays in Testing: add test users).
 - [x] Public URL verified from outside (health, frontend, SPA routes, config, headers, CORS, Google button).
-- [ ] Owner: production checklist from a phone (guide section 5): sign-in, vote, results, survey, restart persistence.
-- [ ] Owner: merge `feature/professional-upgrade` again to publish the focus-ring/HSTS fix.
+- [x] Owner: Google sign-in and the main flows checked in production on a computer, a phone and a tablet. A first phone attempt showed a blank screen right after configuring the Google origin; it worked on the next attempt (most likely Google's origin change had not propagated yet — Google documents a delay of minutes to hours; not confirmed).
+- [ ] Owner: final merge of `feature/professional-upgrade` (focus-ring/HSTS fix, sign-in outcome logging, docs).
+- [ ] Owner: add the evaluator's email as a Google *Test user* (OAuth app in Testing) if they will sign in.
+- [ ] Before each demo: open the public URL once (Render free plan sleeps after 15 minutes).
 - [ ] Owner: real Google sign-in; optionally SMTP.
 - [ ] Owner: decision about the Git history with personal data.
 - [ ] Weekly: commit + README "What changed" section.

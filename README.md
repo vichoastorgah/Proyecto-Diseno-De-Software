@@ -3,8 +3,9 @@
 A web platform that manages **weighted electronic votes** and **mass questionnaires with delegation**, in the spirit of
 "SurveyMonkey, but for votes". Built for the *Software Design* course (TICS316-2-2026), project topic 6.
 
-> **Status (2026-11-18):** every functional requirement of topic 6 is implemented and covered by automated tests on the
-> development branch `feature/professional-upgrade`. Online deployment is pending (see [Deployment](#deployment)).
+> **Status (2026-11-18):** every functional requirement of topic 6 is implemented, covered by automated tests and
+> **published at <https://proyecto-diseno-de-software.onrender.com>** (Render + Supabase). Google sign-in, voting and
+> surveys were checked in production on a computer, a phone and a tablet. See [Deployment](#deployment).
 > Detailed log, requirement/rubric matrices and pending items: [`PROJECT_PROGRESS.md`](PROJECT_PROGRESS.md).
 
 ---
@@ -170,8 +171,8 @@ depends on the container disk. Public URLs default to Render's `RENDER_EXTERNAL_
 at runtime by `GET /api/config`.
 
 Step-by-step guide (Spanish): [`docs/DESPLIEGUE.md`](docs/DESPLIEGUE.md). Verified locally with Docker against a real
-PostgreSQL 17 (restart without data loss, 10 simultaneous ballots → 1 accepted, phone ballot in Chrome); the public
-URL is checked after the owner configures Render.
+PostgreSQL 17 (restart without data loss, 10 simultaneous ballots → 1 accepted, phone ballot in Chrome), then on the
+public URL (API, SPA routes, headers, CORS, Google button) and by the owner on a computer, a phone and a tablet.
 
 ---
 
