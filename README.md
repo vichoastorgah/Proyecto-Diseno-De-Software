@@ -24,6 +24,9 @@ A web platform that manages **weighted electronic votes** and **mass questionnai
 
 ## What changed in this iteration (2026-11-18)
 
+- **Deployment:** single Render service (frontend + API in one Docker image), safe startup checks, Blueprint, real
+  client IP behind the proxy, `DATABASE_URL` validated without printing it.
+
 - **Persistence:** JSON files replaced by **PostgreSQL** — Supabase in production (`postgres.js`), PGlite (PostgreSQL
   in WebAssembly, no install) for development and tests — with migrations, foreign keys, constraints, transactions,
   row locks and Row Level Security. Attachments in a private Supabase Storage bucket (or a local folder in development).
@@ -160,9 +163,15 @@ Client `.env`: `VITE_API_BASE_URL`, `VITE_GOOGLE_CLIENT_ID`.
 
 ## Deployment
 
-Target: frontend on **Vercel**, API as a Docker container on **Render** (`Dockerfile`; Deno Deploy no longer accepts
-new accounts), database and files on **Supabase** (PostgreSQL + private Storage bucket). Step-by-step guide (Spanish): [`docs/DESPLIEGUE.md`](docs/DESPLIEGUE.md). Status: code ready and
-verified locally against PostgreSQL; publication pending the owner's accounts.
+One **Render** web service runs a Docker image (`Dockerfile`, Blueprint in `render.yaml`) in which the Deno API also
+serves the built React app: a single public URL, no CORS, one Google origin. Data and attachments live in
+**Supabase** (PostgreSQL + private Storage bucket); on Render the server refuses to start without them, so nothing
+depends on the container disk. Public URLs default to Render's `RENDER_EXTERNAL_URL`; the Google client id is served
+at runtime by `GET /api/config`.
+
+Step-by-step guide (Spanish): [`docs/DESPLIEGUE.md`](docs/DESPLIEGUE.md). Verified locally with Docker against a real
+PostgreSQL 17 (restart without data loss, 10 simultaneous ballots → 1 accepted, phone ballot in Chrome); the public
+URL is checked after the owner configures Render.
 
 ---
 
