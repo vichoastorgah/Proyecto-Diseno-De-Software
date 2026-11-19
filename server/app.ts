@@ -101,6 +101,8 @@ export function createApp(deps: AppDeps): Application {
     headers.set("X-Content-Type-Options", "nosniff");
     headers.set("Referrer-Policy", "no-referrer");
     headers.set("X-Frame-Options", "DENY");
+    // Hosted deployments are HTTPS-only: browsers must never fall back to plain HTTP.
+    if (deps.config.ephemeralDisk) headers.set("Strict-Transport-Security", "max-age=15552000; includeSubDomains");
     headers.set("Cache-Control", "no-store");
     headers.set("Vary", "Origin");
 

@@ -82,3 +82,16 @@ Deno.test("deployment: the API serves the frontend, SPA routes and assets withou
     await Deno.remove(site, { recursive: true });
   }
 });
+
+Deno.test("deployment: HSTS only on the hosted deployment", async () => {
+  const hosted = await createTestEnv({ ephemeralDisk: true });
+  const local = await createTestEnv();
+  try {
+    const onRender = await hosted.request("GET", "/api/health");
+    assertEquals(onRender.headers.get("strict-transport-security"), "max-age=15552000; includeSubDomains");
+    assertEquals((await local.request("GET", "/api/health")).headers.get("strict-transport-security"), null);
+  } finally {
+    await hosted.cleanup();
+    await local.cleanup();
+  }
+});
